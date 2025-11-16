@@ -1,0 +1,181 @@
+package tool
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestRegistryRegister(t *testing.T) {
+	tests := []struct {
+		name        string
+		tool        Tool
+		preRegister []Tool
+		wantErr     string
+		verify      func(t *testing.T, r *Registry)
+	}{
+		{name: "nil tool", wantErr: "tool is nil"},
+		{name: "empty name", tool: &spyTool{name: ""}, wantErr: "tool name is empty"},
+		{
+			name:        "duplicate name rejected",
+			tool:        &spyTool{name: "echo"},
+			preRegister: []Tool{&spyTool{name: "echo"}},
+			wantErr:     "already registered",
+		},
+		{
+			name: "successful registration available via get and list",
+			tool: &spyTool{name: "sum", result: &ToolResult{Output: "ok"}},
+			verify: func(t *testing.T, r *Registry) {
+				t.Helper()
+				got, err := r.Get("sum")
+				if err != nil {
+					t.Fatalf("get failed: %v", err)
+				}
+				if got.Name() != "sum" {
+					t.Fatalf("unexpected tool returned: %s", got.Name())
+				}
+				if len(r.List()) != 1 {
+					t.Fatalf("list length = %d", len(r.List()))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRegistry()
+			for _, pre := range tt.preRegister {
+				if err := r.Register(pre); err != nil {
+					t.Fatalf("setup register failed: %v", err)
+				}
+			}
+			err := r.Register(tt.tool)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q got %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("register failed: %v", err)
+			}
+			if tt.verify != nil {
+				tt.verify(t, r)
+			}
+		})
+	}
+}
+
+func TestRegistryExecute(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name       string
+		tool       *spyTool
+		params     map[string]interface{}
+		validator  Validator
+		wantErr    string
+		wantCalls  int
+		wantParams map[string]interface{}
+	}{
+		{
+			name:      "tool without schema bypasses validator",
+			tool:      &spyTool{name: "echo", result: &ToolResult{Output: "ok"}},
+			validator: &spyValidator{},
+			wantCalls: 1,
+		},
+		{
+			name:      "validation failure prevents execution",
+			tool:      &spyTool{name: "calc", schema: &JSONSchema{Type: "object"}},
+			validator: &spyValidator{err: errors.New("boom")},
+			wantErr:   "validation failed",
+			wantCalls: 0,
+		},
+		{
+			name:       "validation success forwards params to tool",
+			tool:       &spyTool{name: "calc", schema: &JSONSchema{Type: "object"}, result: &ToolResult{Output: "ok"}},
+			validator:  &spyValidator{},
+			params:     map[string]interface{}{"x": 1},
+			wantCalls:  1,
+			wantParams: map[string]interface{}{"x": 1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRegistry()
+			if err := r.Register(tt.tool); err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			if tt.validator != nil {
+				r.SetValidator(tt.validator)
+			}
+			res, err := r.Execute(ctx, tt.tool.Name(), tt.params)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q got %v", tt.wantErr, err)
+				}
+				if tt.tool.calls != tt.wantCalls {
+					t.Fatalf("tool calls = %d", tt.tool.calls)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("execute failed: %v", err)
+			}
+			if tt.tool.calls != tt.wantCalls {
+				t.Fatalf("tool calls = %d want %d", tt.tool.calls, tt.wantCalls)
+			}
+			if tt.wantParams != nil {
+				for k, v := range tt.wantParams {
+					if tt.tool.params[k] != v {
+						t.Fatalf("param %s mismatch", k)
+					}
+				}
+			}
+			if res == nil {
+				t.Fatal("nil result returned")
+			}
+		})
+	}
+
+	t.Run("unknown tool name returns error", func(t *testing.T) {
+		r := NewRegistry()
+		if _, err := r.Execute(ctx, "missing", nil); err == nil || !strings.Contains(err.Error(), "not found") {
+			t.Fatalf("expected not found error, got %v", err)
+		}
+	})
+}
+
+type spyTool struct {
+	name   string
+	schema *JSONSchema
+	result *ToolResult
+	err    error
+	calls  int
+	params map[string]interface{}
+}
+
+func (s *spyTool) Name() string        { return s.name }
+func (s *spyTool) Description() string { return "spy" }
+func (s *spyTool) Schema() *JSONSchema { return s.schema }
+func (s *spyTool) Execute(ctx context.Context, params map[string]interface{}) (*ToolResult, error) {
+	s.calls++
+	s.params = params
+	if s.result == nil {
+		s.result = &ToolResult{}
+	}
+	return s.result, s.err
+}
+
+type spyValidator struct {
+	err    error
+	calls  int
+	schema *JSONSchema
+}
+
+func (v *spyValidator) Validate(params map[string]interface{}, schema *JSONSchema) error {
+	v.calls++
+	v.schema = schema
+	return v.err
+}
