@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cexll/agentsdk-go/pkg/approval"
 	"github.com/cexll/agentsdk-go/pkg/wal"
 )
 
@@ -16,6 +17,7 @@ const (
 	recordMessage    = "message"
 	recordCheckpoint = "checkpoint"
 	recordResume     = "resume"
+	recordApproval   = "approval"
 )
 
 // FileSession persists conversation transcripts through a WAL.
@@ -30,6 +32,7 @@ type FileSession struct {
 	mu          sync.RWMutex
 	messages    []Message
 	checkpoints map[string]*checkpointState
+	approvals   map[string]approval.Record
 	seq         uint64
 	closed      bool
 	now         func() time.Time
@@ -64,6 +67,7 @@ func NewFileSession(id, root string, opts ...wal.Option) (*FileSession, error) {
 		log:         log,
 		walOpts:     append([]wal.Option(nil), opts...),
 		checkpoints: make(map[string]*checkpointState),
+		approvals:   make(map[string]approval.Record),
 		now:         time.Now,
 	}
 	if err := fs.reload(); err != nil {
@@ -109,6 +113,65 @@ func (s *FileSession) Append(msg Message) error {
 	}
 	s.messages = append(s.messages, cloneMessage(clone))
 	return nil
+}
+
+// AppendApproval persists an approval decision alongside the transcript WAL.
+func (s *FileSession) AppendApproval(rec approval.Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrSessionClosed
+	}
+
+	clone := cloneApprovalRecord(rec)
+	if strings.TrimSpace(clone.SessionID) == "" {
+		clone.SessionID = s.id
+	}
+	if clone.Requested.IsZero() {
+		clone.Requested = s.now().UTC()
+	} else {
+		clone.Requested = clone.Requested.UTC()
+	}
+	if clone.Decided != nil {
+		decided := clone.Decided.UTC()
+		clone.Decided = &decided
+	}
+	if clone.ID == "" {
+		clone.ID = fmt.Sprintf("%s-approval-%06d", s.id, len(s.approvals)+1)
+	}
+
+	recWrapper := walRecord{Kind: recordApproval, Approval: &clone}
+	if _, err := s.appendRecord(recWrapper); err != nil {
+		return err
+	}
+	s.approvals[clone.ID] = clone
+	return nil
+}
+
+// ListApprovals returns persisted approval records matching the filter.
+func (s *FileSession) ListApprovals(filter approval.Filter) ([]approval.Record, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, ErrSessionClosed
+	}
+	var result []approval.Record
+	for _, rec := range s.approvals {
+		if filter.SessionID != "" && rec.SessionID != filter.SessionID {
+			continue
+		}
+		if filter.Tool != "" && rec.Tool != filter.Tool {
+			continue
+		}
+		if filter.Decision != "" && rec.Decision != filter.Decision {
+			continue
+		}
+		if filter.Since != nil && rec.Requested.Before(filter.Since.UTC()) {
+			continue
+		}
+		result = append(result, cloneApprovalRecord(rec))
+	}
+	return result, nil
 }
 
 // List returns messages matching the filter.
@@ -278,6 +341,7 @@ func (s *FileSession) reload() error {
 	var (
 		messages    []Message
 		checkpoints = make(map[string]*checkpointState)
+		approvals   = make(map[string]approval.Record)
 		seq         uint64
 	)
 	err := s.log.Replay(func(e wal.Entry) error {
@@ -310,6 +374,12 @@ func (s *FileSession) reload() error {
 			}
 			messages = cloneMessages(cp.snapshot)
 			seq = uint64(len(messages))
+		case recordApproval:
+			if rec.Approval == nil {
+				return fmt.Errorf("session: approval record missing payload")
+			}
+			cloned := cloneApprovalRecord(*rec.Approval)
+			approvals[cloned.ID] = cloned
 		default:
 			return fmt.Errorf("session: unknown wal record %s", rec.Kind)
 		}
@@ -320,11 +390,16 @@ func (s *FileSession) reload() error {
 	}
 	s.messages = messages
 	s.checkpoints = checkpoints
+	s.approvals = approvals
 	s.seq = seq
 	return nil
 }
 
 func (s *FileSession) gcLocked() {
+	if len(s.approvals) > 0 {
+		// Preserve audit records: approval history should remain intact.
+		return
+	}
 	if len(s.checkpoints) == 0 {
 		return
 	}
@@ -339,12 +414,29 @@ func (s *FileSession) gcLocked() {
 	}
 }
 
+func cloneApprovalRecord(rec approval.Record) approval.Record {
+	clone := rec
+	clone.Requested = rec.Requested.UTC()
+	if rec.Params != nil {
+		clone.Params = make(map[string]any, len(rec.Params))
+		for k, v := range rec.Params {
+			clone.Params[k] = v
+		}
+	}
+	if rec.Decided != nil {
+		ts := rec.Decided.UTC()
+		clone.Decided = &ts
+	}
+	return clone
+}
+
 type walRecord struct {
-	Kind       string    `json:"kind"`
-	Message    *Message  `json:"message,omitempty"`
-	Checkpoint string    `json:"checkpoint,omitempty"`
-	Snapshot   []Message `json:"snapshot,omitempty"`
-	Created    time.Time `json:"created,omitempty"`
+	Kind       string           `json:"kind"`
+	Message    *Message         `json:"message,omitempty"`
+	Checkpoint string           `json:"checkpoint,omitempty"`
+	Snapshot   []Message        `json:"snapshot,omitempty"`
+	Created    time.Time        `json:"created,omitempty"`
+	Approval   *approval.Record `json:"approval,omitempty"`
 }
 
 var _ Session = (*FileSession)(nil)

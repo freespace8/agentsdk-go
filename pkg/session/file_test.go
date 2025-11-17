@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cexll/agentsdk-go/pkg/approval"
 	"github.com/cexll/agentsdk-go/pkg/wal"
 )
 
@@ -102,6 +103,36 @@ func TestFileSessionCrashRecovery(t *testing.T) {
 	}
 	if err := sess.Resume("stable"); err != nil {
 		t.Fatalf("resume checkpoint: %v", err)
+	}
+}
+
+func TestFileSessionApprovalPersistence(t *testing.T) {
+	dir := t.TempDir()
+	sess := newTestFileSession(t, "audit", dir, wal.WithSegmentBytes(1<<12))
+	if err := sess.AppendApproval(approval.Record{
+		SessionID: "audit",
+		Tool:      "echo",
+		Decision:  approval.DecisionApproved,
+		Requested: time.Now(),
+	}); err != nil {
+		t.Fatalf("append approval: %v", err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	reloaded, err := NewFileSession("audit", dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reloaded.Close()
+
+	recs, err := reloaded.ListApprovals(approval.Filter{})
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(recs) != 1 || recs[0].Tool != "echo" || recs[0].Decision != approval.DecisionApproved {
+		t.Fatalf("unexpected approvals %+v", recs)
 	}
 }
 

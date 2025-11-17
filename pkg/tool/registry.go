@@ -8,7 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/cexll/agentsdk-go/pkg/mcp"
+	"github.com/cexll/agentsdk-go/pkg/telemetry"
 )
 
 // Registry keeps the mapping between tool names and implementations.
@@ -18,6 +22,12 @@ type Registry struct {
 	mcpClients []*mcp.Client
 	validator  Validator
 }
+
+const (
+	mcpDefaultProtocolVersion = "2025-06-18"
+	mcpClientName             = "agentsdk-go"
+	mcpClientVersion          = "dev"
+)
 
 // NewRegistry creates a registry backed by the default validator.
 func NewRegistry() *Registry {
@@ -80,7 +90,13 @@ func (r *Registry) SetValidator(v Validator) {
 }
 
 // Execute runs a registered tool after optional schema validation.
-func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) (*ToolResult, error) {
+func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) (_ *ToolResult, err error) {
+	ctx, span := telemetry.StartSpan(ctx, "registry.tool",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(telemetry.SanitizeAttributes(attribute.String("tool.name", strings.TrimSpace(name)))...),
+	)
+	defer telemetry.EndSpan(span, err)
+
 	tool, err := r.Get(name)
 	if err != nil {
 		return nil, err
@@ -98,7 +114,13 @@ func (r *Registry) Execute(ctx context.Context, name string, params map[string]i
 		}
 	}
 
-	return tool.Execute(ctx, params)
+	result, execErr := tool.Execute(ctx, params)
+	err = execErr
+	telemetry.RecordToolCall(ctx, telemetry.ToolData{
+		Name:  name,
+		Error: execErr,
+	})
+	return result, err
 }
 
 // RegisterMCPServer discovers tools exposed by an MCP server and registers them.
@@ -121,6 +143,10 @@ func (r *Registry) RegisterMCPServer(serverPath string) error {
 			_ = client.Close()
 		}
 	}()
+
+	if err := initializeMCPClient(opCtx, client); err != nil {
+		return fmt.Errorf("initialize MCP client: %w", err)
+	}
 
 	tools, err := client.ListTools(opCtx)
 	if err != nil {
@@ -219,6 +245,33 @@ func convertMCPSchema(raw json.RawMessage) (*JSONSchema, error) {
 		}
 	}
 	return &schema, nil
+}
+
+func initializeMCPClient(ctx context.Context, client *mcp.Client) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	params := map[string]interface{}{
+		"protocolVersion": mcpDefaultProtocolVersion,
+		"capabilities":    map[string]interface{}{},
+		"clientInfo": map[string]interface{}{
+			"name":    mcpClientName,
+			"version": mcpClientVersion,
+		},
+	}
+
+	// Some servers (older MCP drafts) do not require initialization. If the method
+	// is missing, continue so the example remains backward compatible.
+	var out map[string]interface{}
+	if err := client.Call(ctx, "initialize", params, &out); err != nil {
+		if mcpErr, ok := err.(*mcp.Error); ok && mcpErr.Code == -32601 {
+			return nil
+		}
+		return err
+	}
+
+	return nil
 }
 
 type remoteTool struct {

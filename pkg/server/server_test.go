@@ -11,7 +11,9 @@ import (
 
 	"github.com/cexll/agentsdk-go/pkg/agent"
 	"github.com/cexll/agentsdk-go/pkg/event"
+	"github.com/cexll/agentsdk-go/pkg/middleware"
 	"github.com/cexll/agentsdk-go/pkg/tool"
+	"github.com/cexll/agentsdk-go/pkg/workflow"
 )
 
 func TestServerRunEndpoint(t *testing.T) {
@@ -148,6 +150,24 @@ func (t *testAgent) RunStream(ctx context.Context, input string) (<-chan event.E
 	return t.runStreamFunc(ctx, input)
 }
 
+func (t *testAgent) RunWorkflow(context.Context, *workflow.Graph, ...workflow.ExecutorOption) error {
+	return nil
+}
+
 func (t *testAgent) AddTool(tool.Tool) error { return nil }
 
+func (t *testAgent) Approve(string, bool) error { return nil }
+
 func (t *testAgent) WithHook(agent.Hook) agent.Agent { return t }
+
+func (t *testAgent) Fork(...agent.ForkOption) (agent.Agent, error) { return t, nil }
+
+func (t *testAgent) Resume(context.Context, *event.Bookmark) (*agent.RunResult, error) {
+	return &agent.RunResult{}, nil
+}
+
+func (t *testAgent) UseMiddleware(mw middleware.Middleware) {}
+
+func (t *testAgent) RemoveMiddleware(name string) bool { return false }
+
+func (t *testAgent) ListMiddlewares() []middleware.Middleware { return nil }

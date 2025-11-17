@@ -6,3 +6,32 @@ type JSONSchema struct {
 	Properties map[string]interface{} `json:"properties"`
 	Required   []string               `json:"required"`
 }
+
+// ToolSchema defines the structure for tool definitions passed to LLM.
+// It follows the OpenAI/Anthropic tool schema format.
+type ToolSchema struct {
+	Type     string          `json:"type"`     // Always "function"
+	Function *FunctionSchema `json:"function"`
+}
+
+// FunctionSchema describes a callable tool function.
+type FunctionSchema struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	Parameters  *ParameterSchema `json:"parameters,omitempty"`
+}
+
+// ParameterSchema defines the input parameters for a tool.
+type ParameterSchema struct {
+	Type       string                     `json:"type"` // Always "object"
+	Properties map[string]*PropertySchema `json:"properties"`
+	Required   []string                   `json:"required,omitempty"`
+}
+
+// PropertySchema describes a single parameter property.
+type PropertySchema struct {
+	Type        string              `json:"type"`        // "string", "number", "boolean", "array", "object"
+	Description string              `json:"description"` // Human-readable description
+	Enum        []string            `json:"enum,omitempty"`
+	Items       *PropertySchema     `json:"items,omitempty"` // For array types
+}
