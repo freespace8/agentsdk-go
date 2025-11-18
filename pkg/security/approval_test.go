@@ -1,7 +1,10 @@
 package security
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -172,5 +175,165 @@ func TestApprovalQueueWhitelistExpiry(t *testing.T) {
 	clock.Advance(time.Minute)
 	if q.IsWhitelisted("sess") {
 		t.Fatalf("expected whitelist to expire")
+	}
+}
+
+func TestApprovalQueueLoadExistingState(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "state", "approvals.json")
+	if err := os.MkdirAll(filepath.Dir(store), 0o755); err != nil {
+		t.Fatalf("mk store dir: %v", err)
+	}
+
+	base := time.Unix(1_700_000_123, 0)
+	rec := &ApprovalRecord{
+		ID:          "restored",
+		SessionID:   "sess",
+		Command:     "uptime",
+		State:       ApprovalDenied,
+		RequestedAt: base,
+	}
+	snapshot := approvalSnapshot{
+		Records:   []*ApprovalRecord{rec},
+		Whitelist: map[string]time.Time{"sess": base.Add(time.Minute)},
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if err := os.WriteFile(store, data, 0o600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	q, err := NewApprovalQueue(store)
+	if err != nil {
+		t.Fatalf("new queue: %v", err)
+	}
+	restored, ok := q.records["restored"]
+	if !ok || restored.Command != "uptime" || restored.State != ApprovalDenied {
+		t.Fatalf("records not restored: %#v", q.records)
+	}
+	expiry, ok := q.whitelist["sess"]
+	if !ok || expiry.Before(base) {
+		t.Fatalf("whitelist not restored: %#v", q.whitelist)
+	}
+}
+
+func TestApprovalQueueLoadCorruptState(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "corrupt", "approvals.json")
+	if err := os.MkdirAll(filepath.Dir(store), 0o755); err != nil {
+		t.Fatalf("mk corrupt dir: %v", err)
+	}
+	if err := os.WriteFile(store, []byte("{not-json"), 0o600); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+	if _, err := NewApprovalQueue(store); err == nil || !strings.Contains(err.Error(), "parse approvals") {
+		t.Fatalf("expected parse error got %v", err)
+	}
+}
+
+func TestApprovalQueueLoadReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod semantics differ on windows")
+	}
+	dir := t.TempDir()
+	store := filepath.Join(dir, "restricted", "approvals.json")
+	if err := os.MkdirAll(filepath.Dir(store), 0o755); err != nil {
+		t.Fatalf("mk restricted dir: %v", err)
+	}
+	if err := os.WriteFile(store, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if err := os.Chmod(store, 0o000); err != nil {
+		t.Skipf("chmod unsupported: %v", err)
+	}
+	defer os.Chmod(store, 0o600)
+
+	if _, err := NewApprovalQueue(store); err == nil || !strings.Contains(err.Error(), "load approvals") {
+		t.Fatalf("expected read error got %v", err)
+	}
+}
+
+func TestApprovalQueueLoadWithoutStorePath(t *testing.T) {
+	q := &ApprovalQueue{
+		records:   make(map[string]*ApprovalRecord),
+		whitelist: make(map[string]time.Time),
+	}
+	if err := q.load(); err != nil {
+		t.Fatalf("load without store should succeed: %v", err)
+	}
+}
+
+func TestApprovalQueuePersistLockedWritesSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "persist", "approvals.json")
+	if err := os.MkdirAll(filepath.Dir(store), 0o755); err != nil {
+		t.Fatalf("mk persist dir: %v", err)
+	}
+	now := time.Unix(1_700_000_500, 0)
+	q := &ApprovalQueue{
+		storePath: store,
+		records: map[string]*ApprovalRecord{
+			"rid": {
+				ID:          "rid",
+				SessionID:   "sess",
+				Command:     "ls",
+				State:       ApprovalPending,
+				RequestedAt: now,
+			},
+		},
+		whitelist: map[string]time.Time{"sess": now.Add(time.Minute)},
+	}
+	if err := q.persistLocked(); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	data, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatalf("read store: %v", err)
+	}
+	var snapshot approvalSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	if len(snapshot.Records) != 1 || snapshot.Records[0].ID != "rid" {
+		t.Fatalf("unexpected records: %#v", snapshot.Records)
+	}
+	if expiry, ok := snapshot.Whitelist["sess"]; !ok || expiry.Before(now) {
+		t.Fatalf("whitelist not persisted: %#v", snapshot.Whitelist)
+	}
+}
+
+func TestApprovalQueuePersistLockedNoStore(t *testing.T) {
+	q := &ApprovalQueue{
+		records: map[string]*ApprovalRecord{
+			"rid": {ID: "rid"},
+		},
+		whitelist: make(map[string]time.Time),
+	}
+	if err := q.persistLocked(); err != nil {
+		t.Fatalf("persist without store: %v", err)
+	}
+}
+
+func TestCloneRecordNilSafe(t *testing.T) {
+	if cloneRecord(nil) != nil {
+		t.Fatalf("expected nil clone for nil input")
+	}
+	rec := &ApprovalRecord{
+		ID:          "orig",
+		SessionID:   "sess",
+		Command:     "ls",
+		Paths:       []string{"/tmp/file"},
+		State:       ApprovalPending,
+		RequestedAt: time.Unix(1_700_000_900, 0),
+	}
+	cloned := cloneRecord(rec)
+	if cloned == rec {
+		t.Fatalf("clone should allocate new struct")
+	}
+	rec.Paths[0] = "/tmp/mutated"
+	if cloned.Paths[0] == "/tmp/mutated" {
+		t.Fatalf("clone did not deep copy paths")
 	}
 }

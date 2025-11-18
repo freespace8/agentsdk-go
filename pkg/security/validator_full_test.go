@@ -1,6 +1,7 @@
 package security
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -113,5 +114,26 @@ func TestValidatorEdgeCasesAndLimits(t *testing.T) {
 				t.Fatalf("expected error containing %q got %v", tt.want, err)
 			}
 		})
+	}
+}
+
+func TestSplitCommandHandlesQuotesAndEscapes(t *testing.T) {
+	cmd := `echo "hello world" 'and more' arg\ with\ spaces`
+	args, err := splitCommand(cmd)
+	if err != nil {
+		t.Fatalf("splitCommand: %v", err)
+	}
+	want := []string{"echo", "hello world", "and more", "arg with spaces"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+}
+
+func TestSplitCommandDetectsEdgeErrors(t *testing.T) {
+	if _, err := splitCommand(`printf unfinished\`); err == nil || !strings.Contains(err.Error(), "unfinished escape") {
+		t.Fatalf("expected unfinished escape error got %v", err)
+	}
+	if _, err := splitCommand(`echo "missing end`); err == nil || !strings.Contains(err.Error(), "unterminated quote") {
+		t.Fatalf("expected quote error got %v", err)
 	}
 }

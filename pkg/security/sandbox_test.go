@@ -260,6 +260,116 @@ func TestSandboxRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestSandboxValidateCommand(t *testing.T) {
+	t.Parallel()
+	sb := NewSandbox(t.TempDir())
+
+	tests := []struct {
+		name    string
+		cmd     string
+		wantErr string
+	}{
+		{name: "banned command", cmd: "rm -rf /", wantErr: "rm"},
+		{name: "blocked metacharacter", cmd: "ls | rm -rf /", wantErr: "metacharacters"},
+		{name: "forbidden argument", cmd: "cat ../etc/passwd", wantErr: "argument"},
+		{name: "safe command passes", cmd: `echo "hello world"`, wantErr: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := sb.ValidateCommand(tt.cmd)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestSandboxAllowIgnoresInvalidEntries(t *testing.T) {
+	t.Parallel()
+	root := tempDirClean(t)
+	sb := NewSandbox(root)
+	initial := len(sb.allowList)
+
+	sb.Allow("")              // ignored empty
+	sb.Allow(sb.allowList[0]) // duplicate
+	if len(sb.allowList) != initial {
+		t.Fatalf("allow list changed for invalid inputs: %v", sb.allowList)
+	}
+
+	additional := filepath.Join(root, "extra")
+	sb.Allow(additional)
+	if len(sb.allowList) != initial+1 {
+		t.Fatalf("expected exactly one new entry, got %d entries", len(sb.allowList))
+	}
+	if got, want := sb.allowList[len(sb.allowList)-1], normalizePath(additional); got != want {
+		t.Fatalf("expected normalized path %q got %q", want, got)
+	}
+}
+
+func TestSandboxValidatePathResolverError(t *testing.T) {
+	t.Parallel()
+	root := tempDirClean(t)
+	target := filepath.Join(root, "nested", "deep", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	sb := NewSandbox(root)
+	sb.resolver.maxDepth = 1
+
+	err := sb.ValidatePath(target)
+	if err == nil {
+		t.Fatalf("expected resolver error")
+	}
+	if !strings.Contains(err.Error(), "resolve failed") || !strings.Contains(err.Error(), "max depth") {
+		t.Fatalf("expected resolver depth error, got %v", err)
+	}
+}
+
+func TestNewSandboxDefaultsToRoot(t *testing.T) {
+	t.Parallel()
+	sb := NewSandbox("")
+	if len(sb.allowList) != 1 || sb.allowList[0] != string(filepath.Separator) {
+		t.Fatalf("unexpected allow list: %#v", sb.allowList)
+	}
+}
+
+func TestWithinSandboxScenarios(t *testing.T) {
+	t.Parallel()
+	root := tempDirClean(t)
+	child := filepath.Join(root, "child")
+	if !withinSandbox(child, root) {
+		t.Fatalf("expected child inside sandbox")
+	}
+	outside := filepath.Join(root, "..", "outside")
+	if withinSandbox(outside, root) {
+		t.Fatalf("expected outside path to be rejected")
+	}
+	if withinSandbox(child, "") {
+		t.Fatalf("empty prefix should never allow access")
+	}
+	if !withinSandbox(filepath.Join(string(filepath.Separator), "tmp"), string(filepath.Separator)) {
+		t.Fatalf("root prefix should allow everything")
+	}
+	same := filepath.Join(root, "same")
+	if !withinSandbox(same, same) {
+		t.Fatalf("path equal to prefix must be allowed")
+	}
+	if !withinSandbox(filepath.Join(same, "nested", "leaf"), same) {
+		t.Fatalf("nested path should inherit prefix even without trailing slash")
+	}
+}
+
 func tempDirClean(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
