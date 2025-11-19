@@ -1,0 +1,240 @@
+package toolbuiltin
+
+import (
+	"context"
+	"errors"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+)
+
+func TestBashOutputReturnsNewLines(t *testing.T) {
+	store := newShellStore()
+	handle, err := store.Register("shell-1")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := handle.Append(ShellStreamStdout, "line1\nline2"); err != nil {
+		t.Fatalf("append stdout: %v", err)
+	}
+	if err := handle.Append(ShellStreamStderr, "err1"); err != nil {
+		t.Fatalf("append stderr: %v", err)
+	}
+	tool := NewBashOutputTool(store)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{"bash_id": "shell-1"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(res.Output, "line1") || !strings.Contains(res.Output, "[stderr] err1") {
+		t.Fatalf("unexpected output:\n%s", res.Output)
+	}
+	data := res.Data.(map[string]interface{})
+	if stdout, _ := data["stdout"].(string); !strings.Contains(stdout, "line1") {
+		t.Fatalf("stdout missing: %#v", stdout)
+	}
+	if stderr, _ := data["stderr"].(string); stderr != "err1" {
+		t.Fatalf("stderr mismatch: %q", stderr)
+	}
+	// Second call should report no new output.
+	res, err = tool.Execute(context.Background(), map[string]interface{}{"bash_id": "shell-1"})
+	if err != nil {
+		t.Fatalf("second execute: %v", err)
+	}
+	if !strings.Contains(res.Output, "no new output") {
+		t.Fatalf("expected no new output, got %s", res.Output)
+	}
+}
+
+func TestBashOutputAppliesFilterAndDropsLines(t *testing.T) {
+	store := newShellStore()
+	handle, err := store.Register("shell-2")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := handle.Append(ShellStreamStdout, "match\nskip\nmatch-again"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	tool := NewBashOutputTool(store)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"bash_id": "shell-2",
+		"filter":  "match",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	data := res.Data.(map[string]interface{})
+	lines, ok := data["lines"].([]ShellLine)
+	if !ok {
+		t.Fatalf("expected []ShellLine, got %T", data["lines"])
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+	if dropped, _ := data["dropped_lines"].(int); dropped != 1 {
+		t.Fatalf("expected dropped=1, got %v", data["dropped_lines"])
+	}
+}
+
+func TestBashOutputUnknownShell(t *testing.T) {
+	tool := NewBashOutputTool(newShellStore())
+	_, err := tool.Execute(context.Background(), map[string]interface{}{"bash_id": "missing"})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+}
+
+func TestBashOutputMetadataAndDefaults(t *testing.T) {
+	tool := NewBashOutputTool(nil)
+	if tool.Name() != "BashOutput" {
+		t.Fatalf("unexpected name %q", tool.Name())
+	}
+	if tool.Schema() == nil || tool.Description() == "" {
+		t.Fatalf("missing schema or description")
+	}
+	if DefaultShellStore() == nil {
+		t.Fatalf("default shell store is nil")
+	}
+	if _, err := tool.Execute(context.Background(), map[string]interface{}{}); err == nil {
+		t.Fatalf("expected error for missing bash_id")
+	}
+	if _, err := tool.Execute(context.Background(), map[string]interface{}{"bash_id": "x", "filter": "["}); err == nil {
+		t.Fatalf("expected regex error")
+	}
+}
+
+func TestShellStoreFail(t *testing.T) {
+	store := newShellStore()
+	handle, err := store.Register("shell-err")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := handle.Fail(errors.New("boom")); err != nil {
+		t.Fatalf("handle fail: %v", err)
+	}
+	tool := NewBashOutputTool(store)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{"bash_id": "shell-err"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(res.Output, "failed") {
+		t.Fatalf("expected failure output, got %s", res.Output)
+	}
+}
+
+func TestShellStoreConcurrentAppend(t *testing.T) {
+	store := newShellStore()
+	handle, err := store.Register("shell-3")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(5)
+	chunks := []string{"a\nb", "c", "d\ne", "f", "g"}
+	for idx := range chunks {
+		chunk := chunks[idx]
+		go func() {
+			defer wg.Done()
+			if err := handle.Append(ShellStreamStdout, chunk); err != nil {
+				t.Errorf("append error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	handle.Close(0)
+	tool := NewBashOutputTool(store)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{"bash_id": "shell-3"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	data := res.Data.(map[string]interface{})
+	lines, ok := data["lines"].([]ShellLine)
+	if !ok {
+		t.Fatalf("expected []ShellLine type, got %T", data["lines"])
+	}
+	if len(lines) != len(strings.Split(strings.Join(chunks, "\n"), "\n")) {
+		t.Fatalf("expected %d lines, got %d", len(strings.Split(strings.Join(chunks, "\n"), "\n")), len(lines))
+	}
+}
+
+func TestShellHandleCloseAndFail(t *testing.T) {
+	store := newShellStore()
+	handle, err := store.Register("shell-handle")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := handle.Close(0); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := handle.Fail(nil); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	var nilHandle *ShellHandle
+	if err := nilHandle.Close(0); err == nil {
+		t.Fatalf("expected error for nil handle close")
+	}
+	if err := nilHandle.Fail(nil); err == nil {
+		t.Fatalf("expected error for nil handle fail")
+	}
+}
+
+func TestBashOutputExecuteErrors(t *testing.T) {
+	tool := &BashOutputTool{}
+	if _, err := tool.Execute(nil, map[string]interface{}{}); err == nil {
+		t.Fatalf("expected context error")
+	}
+	if _, err := tool.Execute(context.Background(), map[string]interface{}{"bash_id": "   "}); err == nil {
+		t.Fatalf("expected whitespace id error")
+	}
+}
+
+func TestShellStoreDuplicateRegister(t *testing.T) {
+	store := newShellStore()
+	if _, err := store.Register("dup"); err != nil {
+		t.Fatalf("register dup: %v", err)
+	}
+	if _, err := store.Register("dup"); err == nil {
+		t.Fatalf("expected duplicate error")
+	}
+}
+
+func TestShellStoreAppendAfterClose(t *testing.T) {
+	store := newShellStore()
+	if err := store.Append("auto", ShellStreamStdout, ""); err != nil {
+		t.Fatalf("append empty chunk: %v", err)
+	}
+	handle, err := store.Register("app")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := handle.Close(0); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := handle.Append(ShellStreamStdout, "line"); err != nil {
+		t.Fatalf("append after close: %v", err)
+	}
+	res, err := store.Consume("app", nil)
+	if err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	if len(res.Lines) != 1 {
+		t.Fatalf("expected single line, got %d", len(res.Lines))
+	}
+}
+
+func TestSplitLinesHandlesWindowsNewlines(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("already covered by native newline handling")
+	}
+	lines := splitLines("a\r\nb\rc")
+	if len(lines) != 3 || lines[1] != "b" {
+		t.Fatalf("unexpected split result %v", lines)
+	}
+	store := newShellStore()
+	if err := store.Close("missing", 0); err == nil {
+		t.Fatalf("expected error closing missing shell")
+	}
+	if err := store.Fail("missing", errors.New("boom")); err == nil {
+		t.Fatalf("expected error failing missing shell")
+	}
+}
