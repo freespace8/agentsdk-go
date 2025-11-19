@@ -1,4 +1,8 @@
 #!/bin/sh
+# 注意:
+# 1. 此脚本已废弃，不再被 Dockerfile 使用。
+# 2. 新的 HTTP 服务器 (examples/http) 直接从环境变量读取配置。
+# 3. 保留此文件仅供参考。
 set -euo pipefail
 
 CONFIG_PATH="${AGENTCTL_CONFIG:-/var/agentsdk/config.json}"

@@ -3,7 +3,9 @@
 Dockerfile
 docker-compose.yml
 docs/
-examples/
+examples/cli
+examples/mcp
+examples/middleware
 tests/
 *.md
 *.log
