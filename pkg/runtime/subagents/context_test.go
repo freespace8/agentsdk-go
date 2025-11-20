@@ -10,24 +10,25 @@ func TestContextCloneIsolation(t *testing.T) {
 		SessionID:     "root",
 		Metadata:      map[string]any{"a": 1},
 		ToolWhitelist: []string{"bash", "curl"},
+		Model:         "sonnet",
 	}
 	cloned := ctx.Clone().WithMetadata(map[string]any{"b": 2}).RestrictTools("curl")
-	if ctx.SessionID != "root" || len(ctx.Metadata) != 1 || len(ctx.ToolWhitelist) != 2 {
+	if ctx.SessionID != "root" || len(ctx.Metadata) != 1 || len(ctx.ToolWhitelist) != 2 || ctx.Model != "sonnet" {
 		t.Fatalf("clone mutated original: %+v", ctx)
 	}
-	if !cloned.Allows("curl") || cloned.Allows("bash") {
+	if !cloned.Allows("curl") || cloned.Allows("bash") || cloned.Model != "sonnet" {
 		t.Fatalf("expected restriction to keep curl only: %+v", cloned.ToolList())
 	}
 }
 
 func TestContextStorageOnStdlibContext(t *testing.T) {
-	sub := Context{SessionID: "child", ToolWhitelist: []string{"bash"}}
+	sub := Context{SessionID: "child", ToolWhitelist: []string{"bash"}, Model: "haiku"}
 	ctx := WithContext(context.Background(), sub)
 	recovered, ok := FromContext(ctx)
 	if !ok {
 		t.Fatalf("expected context present")
 	}
-	if recovered.SessionID != "child" || !recovered.Allows("bash") {
+	if recovered.SessionID != "child" || !recovered.Allows("bash") || recovered.Model != "haiku" {
 		t.Fatalf("unexpected recovered context: %+v", recovered)
 	}
 

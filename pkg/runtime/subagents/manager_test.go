@@ -11,9 +11,12 @@ import (
 func TestManagerRegisterAndDispatchTarget(t *testing.T) {
 	m := NewManager()
 	handler := HandlerFunc(func(ctx context.Context, subCtx Context, req Request) (Result, error) {
+		if subCtx.Model != "sonnet" {
+			t.Fatalf("unexpected model propagation: %+v", subCtx)
+		}
 		return Result{Output: subCtx.SessionID, Metadata: map[string]any{"tools": subCtx.ToolList()}}, nil
 	})
-	if err := m.Register(Definition{Name: "code", BaseContext: Context{SessionID: "child"}}, handler); err != nil {
+	if err := m.Register(Definition{Name: "code", DefaultModel: "sonnet", BaseContext: Context{SessionID: "child"}}, handler); err != nil {
 		t.Fatalf("register failed: %v", err)
 	}
 	if err := m.Register(Definition{Name: "code"}, handler); !errors.Is(err, ErrDuplicateSubagent) {
@@ -165,5 +168,141 @@ func TestManagerValidationAndGuards(t *testing.T) {
 	}
 	if _, err := m.Dispatch(context.Background(), Request{Target: "meta", Instruction: "run", Metadata: map[string]any{"k": "v"}}); err != nil {
 		t.Fatalf("dispatch meta: %v", err)
+	}
+}
+
+func TestManagerDispatchBuiltinTypeContext(t *testing.T) {
+	m := NewManager()
+	type expectation struct {
+		name    string
+		model   string
+		allowed []string
+		blocked []string
+	}
+	cases := []expectation{
+		{
+			name:    TypeGeneralPurpose,
+			model:   ModelSonnet,
+			allowed: []string{"bash", "grep"},
+		},
+		{
+			name:    TypeExplore,
+			model:   ModelHaiku,
+			allowed: []string{"glob", "grep", "read"},
+			blocked: []string{"bash", "write"},
+		},
+		{
+			name:    TypePlan,
+			model:   ModelSonnet,
+			allowed: []string{"todo_write", "web_fetch"},
+		},
+	}
+
+	captured := map[string]Context{}
+	for _, tc := range cases {
+		def, ok := BuiltinDefinition(tc.name)
+		if !ok {
+			t.Fatalf("builtin definition %s missing", tc.name)
+		}
+		testCase := tc
+		if err := m.Register(def, HandlerFunc(func(ctx context.Context, subCtx Context, req Request) (Result, error) {
+			captured[testCase.name] = subCtx
+			return Result{Output: testCase.name}, nil
+		})); err != nil {
+			t.Fatalf("register %s: %v", tc.name, err)
+		}
+	}
+
+	for _, tc := range cases {
+		res, err := m.Dispatch(context.Background(), Request{Target: tc.name, Instruction: "inspect"})
+		if err != nil {
+			t.Fatalf("dispatch %s: %v", tc.name, err)
+		}
+		if res.Subagent != tc.name {
+			t.Fatalf("expected subagent %s, got %s", tc.name, res.Subagent)
+		}
+		subCtx, ok := captured[tc.name]
+		if !ok {
+			t.Fatalf("missing captured context for %s", tc.name)
+		}
+		if subCtx.Model != tc.model {
+			t.Fatalf("expected model %s for %s, got %s", tc.model, tc.name, subCtx.Model)
+		}
+		for _, tool := range tc.allowed {
+			if !subCtx.Allows(tool) {
+				t.Fatalf("%s should allow %s", tc.name, tool)
+			}
+		}
+		for _, tool := range tc.blocked {
+			if subCtx.Allows(tool) {
+				t.Fatalf("%s should block %s", tc.name, tool)
+			}
+		}
+	}
+}
+
+func TestManagerDispatchRespectsExplicitWhitelist(t *testing.T) {
+	m := NewManager()
+	def, ok := BuiltinDefinition(TypeExplore)
+	if !ok {
+		t.Fatal("missing explore definition")
+	}
+	var captured Context
+	if err := m.Register(def, HandlerFunc(func(ctx context.Context, subCtx Context, req Request) (Result, error) {
+		captured = subCtx
+		return Result{Output: "ok"}, nil
+	})); err != nil {
+		t.Fatalf("register explore: %v", err)
+	}
+
+	_, err := m.Dispatch(context.Background(), Request{
+		Target:        TypeExplore,
+		Instruction:   "scan repo",
+		ToolWhitelist: []string{"read", "write", "glob"},
+	})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	tools := captured.ToolList()
+	want := map[string]struct{}{"glob": {}, "read": {}}
+	if len(tools) != len(want) {
+		t.Fatalf("expected %d tools after restriction, got %v", len(want), tools)
+	}
+	for _, tool := range tools {
+		if _, ok := want[tool]; !ok {
+			t.Fatalf("unexpected tool %s in whitelist %v", tool, tools)
+		}
+		delete(want, tool)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing tools after restriction: %v", want)
+	}
+}
+
+func TestBuiltinDefinitionsCatalog(t *testing.T) {
+	defs := BuiltinDefinitions()
+	if len(defs) != 3 {
+		t.Fatalf("expected three builtin definitions, got %d", len(defs))
+	}
+	indexed := map[string]Definition{}
+	for _, def := range defs {
+		indexed[def.Name] = def
+	}
+	if gp, ok := indexed[TypeGeneralPurpose]; !ok || gp.DefaultModel != ModelSonnet || len(gp.BaseContext.ToolWhitelist) != 0 {
+		t.Fatalf("unexpected general-purpose definition: %+v", gp)
+	}
+	if plan, ok := indexed[TypePlan]; !ok || plan.DefaultModel != ModelSonnet {
+		t.Fatalf("unexpected plan definition: %+v", plan)
+	}
+	explore, ok := BuiltinDefinition(TypeExplore)
+	if !ok || explore.DefaultModel != ModelHaiku || len(explore.BaseContext.ToolWhitelist) != 3 {
+		t.Fatalf("unexpected explore definition: %+v", explore)
+	}
+	mutated, _ := BuiltinDefinition(TypeExplore)
+	mutated.BaseContext.ToolWhitelist = nil
+	snapshot, _ := BuiltinDefinition(TypeExplore)
+	if len(snapshot.BaseContext.ToolWhitelist) != 3 {
+		t.Fatalf("expected definition cloning to protect catalog, got %+v", snapshot.BaseContext.ToolWhitelist)
 	}
 }

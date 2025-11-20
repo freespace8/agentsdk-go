@@ -14,11 +14,12 @@ type Context struct {
 	SessionID     string
 	Metadata      map[string]any
 	ToolWhitelist []string
+	Model         string
 }
 
 // Clone produces a deep copy to maintain isolation between runs.
 func (c Context) Clone() Context {
-	cloned := Context{SessionID: c.SessionID}
+	cloned := Context{SessionID: c.SessionID, Model: c.Model}
 	if len(c.Metadata) > 0 {
 		cloned.Metadata = maps.Clone(c.Metadata)
 	}

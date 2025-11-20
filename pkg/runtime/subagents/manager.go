@@ -12,6 +12,15 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/runtime/skills"
 )
 
+const (
+	TypeGeneralPurpose = "general-purpose"
+	TypeExplore        = "explore"
+	TypePlan           = "plan"
+
+	ModelSonnet = "sonnet"
+	ModelHaiku  = "haiku"
+)
+
 var (
 	ErrDuplicateSubagent  = errors.New("subagents: duplicate registration")
 	ErrUnknownSubagent    = errors.New("subagents: unknown target")
@@ -19,14 +28,67 @@ var (
 	ErrEmptyInstruction   = errors.New("subagents: instruction is empty")
 )
 
+var builtinSubagentTypes = map[string]Definition{
+	TypeGeneralPurpose: {
+		Name:         TypeGeneralPurpose,
+		Description:  "General-purpose agent for complex reasoning, research, and coding tasks.",
+		DefaultModel: ModelSonnet,
+		BaseContext: Context{
+			Model: ModelSonnet,
+		},
+	},
+	TypeExplore: {
+		Name:         TypeExplore,
+		Description:  "Fast explorer limited to Glob/Grep/Read for targeted code navigation and Q&A.",
+		DefaultModel: ModelHaiku,
+		BaseContext: Context{
+			ToolWhitelist: []string{"glob", "grep", "read"},
+			Model:         ModelHaiku,
+		},
+	},
+	TypePlan: {
+		Name:         TypePlan,
+		Description:  "Planning agent focused on outlining multi-step strategies with full tool access.",
+		DefaultModel: ModelSonnet,
+		BaseContext: Context{
+			Model: ModelSonnet,
+		},
+	},
+}
+
+// BuiltinDefinitions returns the predefined metadata for core subagent types.
+func BuiltinDefinitions() []Definition {
+	keys := make([]string, 0, len(builtinSubagentTypes))
+	for name := range builtinSubagentTypes {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	defs := make([]Definition, 0, len(keys))
+	for _, name := range keys {
+		defs = append(defs, cloneDefinition(builtinSubagentTypes[name]))
+	}
+	return defs
+}
+
+// BuiltinDefinition looks up a predefined subagent type by name.
+func BuiltinDefinition(name string) (Definition, bool) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	def, ok := builtinSubagentTypes[key]
+	if !ok {
+		return Definition{}, false
+	}
+	return cloneDefinition(def), true
+}
+
 // Definition describes a single subagent.
 type Definition struct {
-	Name        string
-	Description string
-	Priority    int
-	MutexKey    string
-	BaseContext Context
-	Matchers    []skills.Matcher
+	Name         string
+	Description  string
+	Priority     int
+	MutexKey     string
+	BaseContext  Context
+	Matchers     []skills.Matcher
+	DefaultModel string
 }
 
 // Validate ensures the definition is safe to register.
@@ -101,14 +163,20 @@ func (m *Manager) Register(def Definition, handler Handler) error {
 	if handler == nil {
 		return errors.New("subagents: handler is nil")
 	}
+	baseCtx := def.BaseContext.Clone()
+	baseCtx.Model = strings.TrimSpace(baseCtx.Model)
+	if baseCtx.Model == "" {
+		baseCtx.Model = strings.TrimSpace(def.DefaultModel)
+	}
 	normalized := registeredSubagent{
 		definition: Definition{
-			Name:        strings.ToLower(strings.TrimSpace(def.Name)),
-			Description: strings.TrimSpace(def.Description),
-			Priority:    max(def.Priority, 0),
-			MutexKey:    strings.ToLower(strings.TrimSpace(def.MutexKey)),
-			BaseContext: def.BaseContext.Clone(),
-			Matchers:    append([]skills.Matcher(nil), def.Matchers...),
+			Name:         strings.ToLower(strings.TrimSpace(def.Name)),
+			Description:  strings.TrimSpace(def.Description),
+			Priority:     max(def.Priority, 0),
+			MutexKey:     strings.ToLower(strings.TrimSpace(def.MutexKey)),
+			BaseContext:  baseCtx,
+			Matchers:     append([]skills.Matcher(nil), def.Matchers...),
+			DefaultModel: strings.TrimSpace(def.DefaultModel),
 		},
 		handler: handler,
 	}
@@ -262,12 +330,13 @@ func (m *Manager) matching(ctx skills.ActivationContext) []*registeredSubagent {
 
 func cloneDefinition(def Definition) Definition {
 	cloned := Definition{
-		Name:        def.Name,
-		Description: def.Description,
-		Priority:    def.Priority,
-		MutexKey:    def.MutexKey,
-		BaseContext: def.BaseContext.Clone(),
-		Matchers:    append([]skills.Matcher(nil), def.Matchers...),
+		Name:         def.Name,
+		Description:  def.Description,
+		Priority:     def.Priority,
+		MutexKey:     def.MutexKey,
+		BaseContext:  def.BaseContext.Clone(),
+		Matchers:     append([]skills.Matcher(nil), def.Matchers...),
+		DefaultModel: def.DefaultModel,
 	}
 	return cloned
 }
