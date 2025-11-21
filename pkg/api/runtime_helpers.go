@@ -2,6 +2,8 @@ package api
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -143,6 +145,206 @@ func registerSubagents(registrations []SubagentRegistration) (*subagents.Manager
 		}
 	}
 	return mgr, nil
+}
+
+type loaderOptions struct {
+	ProjectRoot string
+	UserHome    string
+	EnableUser  bool
+}
+
+func buildLoaderOptions(opts Options) loaderOptions {
+	home, _ := os.UserHomeDir()
+	return loaderOptions{
+		ProjectRoot: opts.ProjectRoot,
+		UserHome:    home,
+		EnableUser:  true,
+	}
+}
+
+func buildCommandsExecutor(opts Options) (*commands.Executor, []error) {
+	loader := buildLoaderOptions(opts)
+	fsRegs, errs := commands.LoadFromFS(commands.LoaderOptions{
+		ProjectRoot: loader.ProjectRoot,
+		UserHome:    loader.UserHome,
+		EnableUser:  loader.EnableUser,
+	})
+
+	merged := mergeCommandRegistrations(fsRegs, opts.Commands, &errs)
+
+	exec := commands.NewExecutor()
+	for _, reg := range merged {
+		if err := exec.Register(reg.Definition, reg.Handler); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return exec, errs
+}
+
+func mergeCommandRegistrations(fsRegs []commands.CommandRegistration, manual []CommandRegistration, errs *[]error) []commands.CommandRegistration {
+	merged := make([]commands.CommandRegistration, 0, len(fsRegs)+len(manual))
+	index := map[string]int{}
+
+	add := func(def commands.Definition, handler commands.Handler, source string) {
+		key := strings.ToLower(strings.TrimSpace(def.Name))
+		if key == "" {
+			*errs = append(*errs, fmt.Errorf("api: command name is empty (%s)", source))
+			return
+		}
+		if handler == nil {
+			*errs = append(*errs, fmt.Errorf("api: command %s handler is nil", key))
+			return
+		}
+		reg := commands.CommandRegistration{Definition: def, Handler: handler}
+		if idx, ok := index[key]; ok {
+			merged[idx] = reg // manual overrides loader
+			return
+		}
+		index[key] = len(merged)
+		merged = append(merged, reg)
+	}
+
+	for _, reg := range fsRegs {
+		add(reg.Definition, reg.Handler, "loader")
+	}
+	for _, reg := range manual {
+		add(reg.Definition, reg.Handler, "manual")
+	}
+	return merged
+}
+
+func buildSkillsRegistry(opts Options) (*skills.Registry, []error) {
+	loader := buildLoaderOptions(opts)
+	fsRegs, errs := skills.LoadFromFS(skills.LoaderOptions{
+		ProjectRoot: loader.ProjectRoot,
+		UserHome:    loader.UserHome,
+		EnableUser:  loader.EnableUser,
+	})
+
+	merged := mergeSkillRegistrations(fsRegs, opts.Skills, &errs)
+
+	reg := skills.NewRegistry()
+	for _, entry := range merged {
+		if err := reg.Register(entry.Definition, entry.Handler); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return reg, errs
+}
+
+func mergeSkillRegistrations(fsRegs []skills.SkillRegistration, manual []SkillRegistration, errs *[]error) []skills.SkillRegistration {
+	merged := make([]skills.SkillRegistration, 0, len(fsRegs)+len(manual))
+	index := map[string]int{}
+
+	add := func(def skills.Definition, handler skills.Handler, source string) {
+		key := strings.ToLower(strings.TrimSpace(def.Name))
+		if key == "" {
+			*errs = append(*errs, fmt.Errorf("api: skill name is empty (%s)", source))
+			return
+		}
+		if handler == nil {
+			*errs = append(*errs, fmt.Errorf("api: skill %s handler is nil", key))
+			return
+		}
+		reg := skills.SkillRegistration{Definition: def, Handler: handler}
+		if idx, ok := index[key]; ok {
+			merged[idx] = reg
+			return
+		}
+		index[key] = len(merged)
+		merged = append(merged, reg)
+	}
+
+	for _, reg := range fsRegs {
+		add(reg.Definition, reg.Handler, "loader")
+	}
+	for _, reg := range manual {
+		add(reg.Definition, reg.Handler, "manual")
+	}
+	return merged
+}
+
+func buildSubagentsManager(opts Options) (*subagents.Manager, []error) {
+	loader := buildLoaderOptions(opts)
+	allRegs, errs := subagents.LoadFromFS(subagents.LoaderOptions{
+		ProjectRoot: loader.ProjectRoot,
+		UserHome:    loader.UserHome,
+		EnableUser:  loader.EnableUser,
+	})
+	projectRegs, _ := subagents.LoadFromFS(subagents.LoaderOptions{
+		ProjectRoot: loader.ProjectRoot,
+		UserHome:    loader.UserHome,
+		EnableUser:  false,
+	})
+
+	projectNames := map[string]struct{}{}
+	for _, reg := range projectRegs {
+		name := strings.ToLower(strings.TrimSpace(reg.Definition.Name))
+		if name != "" {
+			projectNames[name] = struct{}{}
+		}
+	}
+
+	userFirst := make([]subagents.SubagentRegistration, 0, len(allRegs))
+	for _, reg := range allRegs {
+		name := strings.ToLower(strings.TrimSpace(reg.Definition.Name))
+		if name == "" {
+			errs = append(errs, errors.New("api: subagent name is empty (loader)"))
+			continue
+		}
+		if _, hasProject := projectNames[name]; hasProject {
+			continue
+		}
+		userFirst = append(userFirst, reg)
+	}
+
+	merged := mergeSubagentRegistrations(userFirst, opts.Subagents, projectRegs, &errs)
+	if len(merged) == 0 {
+		return nil, errs
+	}
+
+	mgr := subagents.NewManager()
+	for _, reg := range merged {
+		if err := mgr.Register(reg.Definition, reg.Handler); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return mgr, errs
+}
+
+func mergeSubagentRegistrations(user []subagents.SubagentRegistration, manual []SubagentRegistration, project []subagents.SubagentRegistration, errs *[]error) []subagents.SubagentRegistration {
+	merged := make([]subagents.SubagentRegistration, 0, len(user)+len(manual)+len(project))
+	index := map[string]int{}
+
+	add := func(def subagents.Definition, handler subagents.Handler, source string) {
+		key := strings.ToLower(strings.TrimSpace(def.Name))
+		if key == "" {
+			*errs = append(*errs, fmt.Errorf("api: subagent name is empty (%s)", source))
+			return
+		}
+		if handler == nil {
+			*errs = append(*errs, fmt.Errorf("api: subagent %s handler is nil", key))
+			return
+		}
+		entry := subagents.SubagentRegistration{Definition: def, Handler: handler}
+		if idx, ok := index[key]; ok {
+			merged[idx] = entry
+			return
+		}
+		index[key] = len(merged)
+		merged = append(merged, entry)
+	}
+
+	for _, reg := range user {
+		add(reg.Definition, reg.Handler, "user")
+	}
+	for _, reg := range manual {
+		add(reg.Definition, reg.Handler, "manual")
+	}
+	for _, reg := range project {
+		add(reg.Definition, reg.Handler, "project")
+	}
+	return merged
 }
 
 type historyStore struct {

@@ -46,7 +46,8 @@ type StreamEvent struct {
 	ToolUseID string      `json:"tool_use_id,omitempty"`      // ToolUseID associates tool events with tool execution records.
 	Name      string      `json:"name,omitempty"`             // Name describes the agent, tool, or block responsible for the event.
 	Output    interface{} `json:"output,omitempty"`           // Output captures arbitrary structured payloads (e.g., tool stdout).
-	IsError   *bool       `json:"is_error,omitempty"`         // IsError flags whether the event describes an error condition.
+	IsStderr  *bool       `json:"is_stderr,omitempty"`        // IsStderr marks whether the output originated from stderr (not necessarily an error).
+	IsError   *bool       `json:"is_error,omitempty"`         // IsError flags a genuine execution failure surfaced by the runtime/toolchain.
 	SessionID string      `json:"session_id,omitempty"`       // SessionID ties events to a long-lived agent session.
 	Iteration *int        `json:"iteration,omitempty"`        // Iteration indicates the current agent iteration, if applicable.
 	TotalIter *int        `json:"total_iterations,omitempty"` // TotalIter reports the planned maximum iteration count.

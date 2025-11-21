@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"net/url"
 	"runtime"
@@ -31,6 +32,27 @@ import (
 type contextKey string
 
 const middlewareStateKey contextKey = "agentsdk.middleware.state"
+const streamEmitCtxKey contextKey = "agentsdk.stream.emit"
+
+func withStreamEmit(ctx context.Context, emit streamEmitFunc) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if emit == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, streamEmitCtxKey, emit)
+}
+
+func streamEmitFromContext(ctx context.Context) streamEmitFunc {
+	if ctx == nil {
+		return nil
+	}
+	if emit, ok := ctx.Value(streamEmitCtxKey).(streamEmitFunc); ok {
+		return emit
+	}
+	return nil
+}
 
 // Runtime exposes the unified SDK surface that powers CLI/CI/enterprise entrypoints.
 type Runtime struct {
@@ -71,17 +93,23 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	opts.Model = mdl
 
 	sbox, sbRoot := buildSandboxManager(opts, settings)
-	skReg, err := registerSkills(opts.Skills)
-	if err != nil {
-		return nil, err
+	cmdExec, cmdErrs := buildCommandsExecutor(opts)
+	if len(cmdErrs) > 0 {
+		for _, err := range cmdErrs {
+			log.Printf("command loader warning: %v", err)
+		}
 	}
-	cmdExec, err := registerCommands(opts.Commands)
-	if err != nil {
-		return nil, err
+	skReg, skErrs := buildSkillsRegistry(opts)
+	if len(skErrs) > 0 {
+		for _, err := range skErrs {
+			log.Printf("skill loader warning: %v", err)
+		}
 	}
-	subMgr, err := registerSubagents(opts.Subagents)
-	if err != nil {
-		return nil, err
+	subMgr, subErrs := buildSubagentsManager(opts)
+	if len(subErrs) > 0 {
+		for _, err := range subErrs {
+			log.Printf("subagent loader warning: %v", err)
+		}
 	}
 	registry := tool.NewRegistry()
 	plugins, err := discoverPlugins(opts.ProjectRoot, settings)
@@ -152,6 +180,8 @@ func (rt *Runtime) RunStream(ctx context.Context, req Request) (<-chan StreamEve
 		baseCtx = context.Background()
 	}
 	progressMW := newProgressMiddleware(progressChan)
+	ctxWithEmit := withStreamEmit(baseCtx, progressMW.streamEmit())
+	prep.ctx = ctxWithEmit
 	go func() {
 		defer close(out)
 		done := make(chan struct{})
@@ -164,7 +194,7 @@ func (rt *Runtime) RunStream(ctx context.Context, req Request) (<-chan StreamEve
 				}
 				select {
 				case out <- event:
-				case <-baseCtx.Done():
+				case <-ctxWithEmit.Done():
 					dropping = true
 				}
 			}
@@ -751,6 +781,18 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 		Path:   t.root,
 		Host:   t.host,
 		Usage:  t.measureUsage(),
+	}
+	if emit := streamEmitFromContext(ctx); emit != nil {
+		callSpec.StreamSink = func(chunk string, isStderr bool) {
+			evt := StreamEvent{
+				Type:      EventToolExecutionOutput,
+				ToolUseID: call.ID,
+				Name:      call.Name,
+				Output:    chunk,
+			}
+			evt.IsStderr = &isStderr
+			emit(ctx, evt)
+		}
 	}
 	if t.host != "" {
 		callSpec.Host = t.host
