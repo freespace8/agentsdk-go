@@ -1,0 +1,260 @@
+package commands
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// LoaderOptions controls how commands are discovered from the filesystem.
+type LoaderOptions struct {
+	ProjectRoot string
+	UserHome    string
+	EnableUser  bool // whether to scan the user's ~/.claude directory
+}
+
+// CommandFile captures an on-disk command definition.
+type CommandFile struct {
+	Name     string
+	Path     string
+	Metadata CommandMetadata
+	Body     string
+}
+
+// CommandMetadata describes optional YAML frontmatter fields.
+type CommandMetadata struct {
+	Description            string `yaml:"description"`
+	AllowedTools           string `yaml:"allowed-tools"`
+	ArgumentHint           string `yaml:"argument-hint"`
+	Model                  string `yaml:"model"`
+	DisableModelInvocation bool   `yaml:"disable-model-invocation"`
+}
+
+// CommandRegistration wires a definition to its handler.
+type CommandRegistration struct {
+	Definition Definition
+	Handler    Handler
+}
+
+// LoadFromFS loads slash commands from the filesystem. It never returns a nil
+// registrations slice. Errors are aggregated so a single bad file doesn't
+// prevent others from loading.
+func LoadFromFS(opts LoaderOptions) ([]CommandRegistration, []error) {
+	var (
+		registrations []CommandRegistration
+		merged        = map[string]CommandFile{}
+		errs          []error
+	)
+
+	if opts.EnableUser {
+		home := opts.UserHome
+		if home == "" {
+			h, err := os.UserHomeDir()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("commands: resolve user home: %w", err))
+			} else {
+				home = h
+			}
+		}
+		if home != "" {
+			userDir := filepath.Join(home, ".claude", "commands")
+			files, loadErrs := loadCommandDir(userDir)
+			errs = append(errs, loadErrs...)
+			for name, file := range files {
+				merged[name] = file
+			}
+		}
+	}
+
+	projectDir := filepath.Join(opts.ProjectRoot, ".claude", "commands")
+	files, loadErrs := loadCommandDir(projectDir)
+	errs = append(errs, loadErrs...)
+	for name, file := range files {
+		merged[name] = file // project-level overrides user-level
+	}
+
+	if len(merged) == 0 {
+		return nil, errs
+	}
+
+	names := make([]string, 0, len(merged))
+	for name := range merged {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		file := merged[name]
+		reg := CommandRegistration{
+			Definition: Definition{
+				Name:        file.Name,
+				Description: strings.TrimSpace(file.Metadata.Description),
+			},
+			Handler: buildHandler(file),
+		}
+		registrations = append(registrations, reg)
+	}
+
+	return registrations, errs
+}
+
+func loadCommandDir(root string) (map[string]CommandFile, []error) {
+	results := map[string]CommandFile{}
+	var errs []error
+
+	info, err := os.Stat(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return results, nil
+		}
+		return results, []error{fmt.Errorf("commands: stat %s: %w", root, err)}
+	}
+	if !info.IsDir() {
+		return results, []error{fmt.Errorf("commands: path %s is not a directory", root)}
+	}
+
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			errs = append(errs, fmt.Errorf("commands: walk %s: %w", path, walkErr))
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.ToLower(filepath.Ext(d.Name())) != ".md" {
+			return nil
+		}
+
+		name := strings.ToLower(strings.TrimSuffix(d.Name(), filepath.Ext(d.Name())))
+		if !validName(name) {
+			errs = append(errs, fmt.Errorf("commands: invalid command name %q from file %s", name, path))
+			return nil
+		}
+
+		file, parseErr := parseCommandFile(path, name)
+		if parseErr != nil {
+			errs = append(errs, parseErr)
+			return nil
+		}
+		if _, exists := results[name]; exists {
+			errs = append(errs, fmt.Errorf("commands: duplicate command %q in %s", name, root))
+			return nil
+		}
+		results[name] = file
+		return nil
+	})
+	if walkErr != nil {
+		errs = append(errs, walkErr)
+	}
+	return results, errs
+}
+
+func parseCommandFile(path, name string) (CommandFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CommandFile{}, fmt.Errorf("commands: read %s: %w", path, err)
+	}
+	meta, body, err := parseFrontMatter(string(data))
+	if err != nil {
+		return CommandFile{}, fmt.Errorf("commands: parse %s: %w", path, err)
+	}
+	return CommandFile{
+		Name:     name,
+		Path:     path,
+		Metadata: meta,
+		Body:     body,
+	}, nil
+}
+
+func parseFrontMatter(content string) (CommandMetadata, string, error) {
+	trimmed := strings.TrimPrefix(content, "\uFEFF") // drop BOM if present
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return CommandMetadata{}, trimmed, nil
+	}
+
+	end := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			end = i
+			break
+		}
+	}
+	if end == -1 {
+		return CommandMetadata{}, "", errors.New("commands: missing closing frontmatter separator")
+	}
+
+	metaText := strings.Join(lines[1:end], "\n")
+	var meta CommandMetadata
+	if err := yaml.Unmarshal([]byte(metaText), &meta); err != nil {
+		return CommandMetadata{}, "", err
+	}
+
+	body := strings.Join(lines[end+1:], "\n")
+	body = strings.TrimPrefix(body, "\n")
+	return meta, body, nil
+}
+
+func buildHandler(file CommandFile) Handler {
+	metadata := buildMetadataMap(file.Metadata, file.Path)
+	body := file.Body
+
+	return HandlerFunc(func(_ context.Context, inv Invocation) (Result, error) {
+		rendered := applyArguments(body, inv.Args)
+		res := Result{Output: rendered}
+		if len(metadata) > 0 {
+			res.Metadata = metadata
+		}
+		return res, nil
+	})
+}
+
+func buildMetadataMap(meta CommandMetadata, path string) map[string]any {
+	out := map[string]any{}
+	if meta.AllowedTools != "" {
+		out["allowed-tools"] = meta.AllowedTools
+	}
+	if meta.ArgumentHint != "" {
+		out["argument-hint"] = meta.ArgumentHint
+	}
+	if meta.Model != "" {
+		out["model"] = meta.Model
+	}
+	if meta.DisableModelInvocation {
+		out["disable-model-invocation"] = true
+	}
+	if path != "" {
+		out["source"] = path
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func applyArguments(body string, args []string) string {
+	if len(args) == 0 && !strings.Contains(body, "$") {
+		return body
+	}
+	rendered := strings.ReplaceAll(body, "$ARGUMENTS", strings.Join(args, " "))
+	if !strings.Contains(rendered, "$") {
+		return rendered
+	}
+	re := regexp.MustCompile(`\$(\d+)`)
+	return re.ReplaceAllStringFunc(rendered, func(match string) string {
+		idx, err := strconv.Atoi(match[1:])
+		if err != nil || idx <= 0 || idx > len(args) {
+			return ""
+		}
+		return args[idx-1]
+	})
+}
