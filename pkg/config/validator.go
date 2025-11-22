@@ -36,6 +36,9 @@ func ValidateSettings(s *Settings) error {
 	// sandbox
 	errs = append(errs, validateSandboxConfig(s.Sandbox)...)
 
+	// mcp
+	errs = append(errs, validateMCPConfig(s.MCP, s.LegacyMCPServers)...)
+
 	// plugins & marketplaces
 	errs = append(errs, validatePluginsConfig(s.EnabledPlugins, s.ExtraKnownMarketplaces)...)
 
@@ -99,6 +102,11 @@ func validatePermissionRule(rule string) error {
 	if rule == "" {
 		return errors.New("permission rule is empty")
 	}
+
+	if !strings.Contains(rule, "(") {
+		return nil
+	}
+
 	if !strings.HasSuffix(rule, ")") {
 		return fmt.Errorf("permission rule %q must end with )", rule)
 	}
@@ -129,6 +137,23 @@ func validateToolName(name string) error {
 	return nil
 }
 
+// validateToolPattern accepts literal tool names, wildcard "*", and arbitrary regex patterns.
+// Selector in pkg/core/hooks compiles the provided string, so we enforce regex validity here
+// while still allowing the catch-all wildcard used in configs.
+func validateToolPattern(pattern string) error {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return errors.New("tool pattern is empty")
+	}
+	if pattern == "*" {
+		return nil
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return fmt.Errorf("tool pattern %q is not a valid regexp: %w", pattern, err)
+	}
+	return nil
+}
+
 func validateHooksConfig(h *HooksConfig) []error {
 	if h == nil {
 		return nil
@@ -152,7 +177,7 @@ func validateHookMap(label string, hooks map[string]string) []error {
 	var errs []error
 	for _, tool := range keys {
 		cmd := hooks[tool]
-		if err := validateToolName(tool); err != nil {
+		if err := validateToolPattern(tool); err != nil {
 			errs = append(errs, fmt.Errorf("%s[%s]: %w", label, tool, err))
 		}
 		if strings.TrimSpace(cmd) == "" {
@@ -181,6 +206,55 @@ func validateSandboxConfig(s *SandboxConfig) []error {
 		if s.Network.SocksProxyPort != nil {
 			if err := validatePortRange(*s.Network.SocksProxyPort); err != nil {
 				errs = append(errs, fmt.Errorf("sandbox.network.socksProxyPort: %w", err))
+			}
+		}
+	}
+	return errs
+}
+
+func validateMCPConfig(cfg *MCPConfig, legacy []string) []error {
+	var errs []error
+	if len(legacy) > 0 {
+		errs = append(errs, errors.New("mcpServers is deprecated; migrate to mcp.servers map"))
+	}
+	if cfg == nil || len(cfg.Servers) == 0 {
+		return errs
+	}
+	names := make([]string, 0, len(cfg.Servers))
+	for name := range cfg.Servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			errs = append(errs, errors.New("mcp.servers has an empty name"))
+			continue
+		}
+		entry := cfg.Servers[name]
+		serverType := strings.ToLower(strings.TrimSpace(entry.Type))
+		if serverType == "" {
+			serverType = "stdio"
+		}
+		if entry.TimeoutSeconds < 0 {
+			errs = append(errs, fmt.Errorf("mcp.servers[%s].timeoutSeconds must be >=0", name))
+		}
+		switch serverType {
+		case "stdio":
+			if strings.TrimSpace(entry.Command) == "" {
+				errs = append(errs, fmt.Errorf("mcp.servers[%s].command is required for type stdio", name))
+			}
+		case "http", "sse":
+			if strings.TrimSpace(entry.URL) == "" {
+				errs = append(errs, fmt.Errorf("mcp.servers[%s].url is required for type %s", name, serverType))
+			}
+		default:
+			errs = append(errs, fmt.Errorf("mcp.servers[%s].type %q is not supported", name, entry.Type))
+		}
+		for k := range entry.Headers {
+			if strings.TrimSpace(k) == "" {
+				errs = append(errs, fmt.Errorf("mcp.servers[%s].headers contains empty key", name))
+				break
 			}
 		}
 	}

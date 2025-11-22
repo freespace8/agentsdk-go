@@ -468,6 +468,19 @@ func TestSettingsLoader_PlatformSpecific(t *testing.T) {
 	require.Equal(t, expected["linux"], managedPathForOS("linux"))
 }
 
+func TestSettingsLoaderMissingProjectRoot(t *testing.T) {
+	loader := SettingsLoader{}
+	_, err := loader.Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "project root")
+}
+
+func TestLoadJSONFileMissingReturnsNil(t *testing.T) {
+	settings, err := loadJSONFile(filepath.Join(t.TempDir(), "missing.json"))
+	require.NoError(t, err)
+	require.Nil(t, settings)
+}
+
 func managedPathForOS(goos string) string {
 	switch goos {
 	case "darwin":

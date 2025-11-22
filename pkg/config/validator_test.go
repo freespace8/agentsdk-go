@@ -44,10 +44,10 @@ func TestValidateSettingsAggregatesErrors(t *testing.T) {
 		Model: "",
 		Permissions: &PermissionsConfig{
 			DefaultMode: "invalid",
-			Allow:       []string{"bad rule"},
+			Allow:       []string{"tool()"},
 		},
 		Hooks: &HooksConfig{
-			PreToolUse: map[string]string{"invalid tool": "", "bash": ""},
+			PreToolUse: map[string]string{"bad[": "", "bash": ""},
 		},
 		Sandbox: &SandboxConfig{
 			ExcludedCommands: []string{"", "  "},
@@ -81,12 +81,12 @@ func TestValidateSettingsAggregatesErrors(t *testing.T) {
 }
 
 func TestValidatePermissionRule(t *testing.T) {
-	valid := []string{"Bash(ls -la)", "Read(*.go)", "tool_1(target)"}
+	valid := []string{"Bash(ls -la)", "Read(*.go)", "tool_1(target)", "mcp.server/list-files", "SimpleTool"}
 	for _, rule := range valid {
 		require.NoErrorf(t, validatePermissionRule(rule), "expected rule %s to be valid", rule)
 	}
 
-	invalid := []string{"", "NoParen", "tool()", "bad tool(target)", "tool(target)(extra)"}
+	invalid := []string{"", "tool()", "bad tool(target)", "tool(target)(extra)"}
 	for _, rule := range invalid {
 		require.Error(t, validatePermissionRule(rule), "rule %q should be invalid", rule)
 	}
@@ -139,6 +139,27 @@ func TestValidateHooksConfig_EmptyCommand(t *testing.T) {
 	})
 	require.Len(t, errs, 1)
 	require.Contains(t, errs[0].Error(), "command is empty")
+}
+
+func TestValidateHooksConfig_AllowsWildcardAndRegex(t *testing.T) {
+	errs := validateHooksConfig(&HooksConfig{
+		PreToolUse: map[string]string{
+			"*":                   "echo any",
+			"^file_(read|write)$": "echo file",
+		},
+		PostToolUse: map[string]string{
+			"grep|awk": "echo post",
+		},
+	})
+	require.Empty(t, errs)
+}
+
+func TestValidateHooksConfig_InvalidRegex(t *testing.T) {
+	errs := validateHooksConfig(&HooksConfig{
+		PreToolUse: map[string]string{"bad[": "echo"},
+	})
+	require.Len(t, errs, 1)
+	require.Contains(t, errs[0].Error(), "not a valid regexp")
 }
 
 func TestValidatePermissionRule_TargetEmpty(t *testing.T) {

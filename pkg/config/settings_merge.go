@@ -41,7 +41,8 @@ func MergeSettings(lower, higher *Settings) *Settings {
 	if higher.Model != "" {
 		result.Model = higher.Model
 	}
-	result.MCPServers = mergeStringSlices(lower.MCPServers, higher.MCPServers)
+	result.MCP = mergeMCPConfig(lower.MCP, higher.MCP)
+	result.LegacyMCPServers = mergeStringSlices(lower.LegacyMCPServers, higher.LegacyMCPServers)
 	result.StatusLine = mergeStatusLine(lower.StatusLine, higher.StatusLine)
 	if higher.OutputStyle != "" {
 		result.OutputStyle = higher.OutputStyle
@@ -304,6 +305,28 @@ func mergeStatusLine(lower, higher *StatusLineConfig) *StatusLineConfig {
 	return out
 }
 
+func mergeMCPConfig(lower, higher *MCPConfig) *MCPConfig {
+	if lower == nil && higher == nil {
+		return nil
+	}
+	if lower == nil {
+		return cloneMCPConfig(higher)
+	}
+	if higher == nil {
+		return cloneMCPConfig(lower)
+	}
+	out := cloneMCPConfig(lower)
+	if len(higher.Servers) > 0 {
+		if out.Servers == nil {
+			out.Servers = make(map[string]MCPServerConfig, len(higher.Servers))
+		}
+		for name, cfg := range higher.Servers {
+			out.Servers[name] = cloneMCPServerConfig(cfg)
+		}
+	}
+	return out
+}
+
 func mergeMCPServerRules(lower, higher []MCPServerRule) []MCPServerRule {
 	if len(higher) > 0 {
 		return append([]MCPServerRule(nil), higher...)
@@ -336,7 +359,8 @@ func cloneSettings(src *Settings) *Settings {
 	out.DeniedMcpServers = mergeMCPServerRules(nil, src.DeniedMcpServers)
 	out.EnabledPlugins = mergeBoolMap(nil, src.EnabledPlugins)
 	out.ExtraKnownMarketplaces = mergeMarketplaceSources(nil, src.ExtraKnownMarketplaces)
-	out.MCPServers = mergeStringSlices(nil, src.MCPServers)
+	out.MCP = cloneMCPConfig(src.MCP)
+	out.LegacyMCPServers = mergeStringSlices(nil, src.LegacyMCPServers)
 	return &out
 }
 
@@ -392,6 +416,28 @@ func cloneSandboxNetwork(src *SandboxNetworkConfig) *SandboxNetworkConfig {
 	}
 	out.AllowLocalBinding = cloneBoolPtr(src.AllowLocalBinding)
 	return &out
+}
+
+func cloneMCPConfig(src *MCPConfig) *MCPConfig {
+	if src == nil {
+		return nil
+	}
+	out := &MCPConfig{}
+	if len(src.Servers) > 0 {
+		out.Servers = make(map[string]MCPServerConfig, len(src.Servers))
+		for name, cfg := range src.Servers {
+			out.Servers[name] = cloneMCPServerConfig(cfg)
+		}
+	}
+	return out
+}
+
+func cloneMCPServerConfig(src MCPServerConfig) MCPServerConfig {
+	out := src
+	out.Args = mergeStringSlices(nil, src.Args)
+	out.Env = mergeMaps(nil, src.Env)
+	out.Headers = mergeMaps(nil, src.Headers)
+	return out
 }
 
 func cloneStatusLine(src *StatusLineConfig) *StatusLineConfig {

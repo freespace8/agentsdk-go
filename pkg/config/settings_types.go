@@ -21,7 +21,8 @@ type Settings struct {
 	Model                      string                       `json:"model,omitempty"`                      // Override default model id.
 	StatusLine                 *StatusLineConfig            `json:"statusLine,omitempty"`                 // Custom status line settings.
 	OutputStyle                string                       `json:"outputStyle,omitempty"`                // Optional named output style.
-	MCPServers                 []string                     `json:"mcpServers,omitempty"`                 // Explicit MCP servers to enable (stdio:// or http(s)://).
+	MCP                        *MCPConfig                   `json:"mcp,omitempty"`                        // MCP server definitions keyed by name.
+	LegacyMCPServers           []string                     `json:"mcpServers,omitempty"`                 // Deprecated list format; kept for migration errors.
 	ForceLoginMethod           string                       `json:"forceLoginMethod,omitempty"`           // Restrict login to "claudeai" or "console".
 	ForceLoginOrgUUID          string                       `json:"forceLoginOrgUUID,omitempty"`          // Org UUID to auto-select during login when set.
 	Sandbox                    *SandboxConfig               `json:"sandbox,omitempty"`                    // Bash sandbox configuration.
@@ -75,6 +76,22 @@ type MarketplaceConfig = plugins.MarketplaceConfig
 
 // MarketplaceSource describes where a marketplace is hosted.
 type MarketplaceSource = plugins.MarketplaceSource
+
+// MCPConfig nests Model Context Protocol server definitions.
+type MCPConfig struct {
+	Servers map[string]MCPServerConfig `json:"servers,omitempty"`
+}
+
+// MCPServerConfig describes how to reach an MCP server.
+type MCPServerConfig struct {
+	Type           string            `json:"type"`              // stdio/http/sse
+	Command        string            `json:"command,omitempty"` // for stdio
+	Args           []string          `json:"args,omitempty"`
+	URL            string            `json:"url,omitempty"` // for http/sse
+	Env            map[string]string `json:"env,omitempty"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // optional per-transport timeout
+}
 
 // MCPServerRule constrains which MCP servers can be enabled.
 type MCPServerRule struct {

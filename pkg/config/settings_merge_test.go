@@ -110,4 +110,37 @@ func TestMergeStringSlicesHandlesNil(t *testing.T) {
 	require.Nil(t, mergeStringSlices(nil, nil))
 }
 
+func TestMergeSettingsNestedFields(t *testing.T) {
+	lower := &Settings{
+		Model:       "base",
+		Permissions: &PermissionsConfig{Allow: []string{"A"}, DefaultMode: "askBeforeRunningTools"},
+		Hooks:       &HooksConfig{PreToolUse: map[string]string{"bash": "echo low"}},
+		Sandbox:     &SandboxConfig{ExcludedCommands: []string{"rm"}, Network: &SandboxNetworkConfig{HTTPProxyPort: intPtr(8080)}},
+		StatusLine:  &StatusLineConfig{Type: "command", Command: "echo"},
+		MCP:         &MCPConfig{Servers: map[string]MCPServerConfig{"one": {Type: "stdio", Command: "bin"}}},
+	}
+	higher := &Settings{
+		Model:       "override",
+		Permissions: &PermissionsConfig{Ask: []string{"B"}, DefaultMode: "acceptEdits"},
+		Hooks:       &HooksConfig{PostToolUse: map[string]string{"bash": "echo hi"}},
+		Sandbox:     &SandboxConfig{Network: &SandboxNetworkConfig{SocksProxyPort: intPtr(9000)}},
+		StatusLine:  &StatusLineConfig{Type: "template", Template: "ok"},
+		MCP:         &MCPConfig{Servers: map[string]MCPServerConfig{"two": {Type: "http", URL: "https://api"}}},
+	}
+
+	merged := MergeSettings(lower, higher)
+	require.Equal(t, "override", merged.Model)
+	require.Contains(t, merged.Permissions.Allow, "A")
+	require.Contains(t, merged.Permissions.Ask, "B")
+	require.Equal(t, "acceptEdits", merged.Permissions.DefaultMode)
+	require.Equal(t, "echo low", merged.Hooks.PreToolUse["bash"])
+	require.Equal(t, "echo hi", merged.Hooks.PostToolUse["bash"])
+	require.Equal(t, 8080, *merged.Sandbox.Network.HTTPProxyPort)
+	require.Equal(t, 9000, *merged.Sandbox.Network.SocksProxyPort)
+	require.Equal(t, "template", merged.StatusLine.Type)
+	require.Equal(t, "ok", merged.StatusLine.Template)
+	require.Equal(t, "bin", merged.MCP.Servers["one"].Command)
+	require.Equal(t, "https://api", merged.MCP.Servers["two"].URL)
+}
+
 func intPtr(v int) *int { return &v }

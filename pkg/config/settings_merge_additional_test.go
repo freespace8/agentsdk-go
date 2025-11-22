@@ -83,3 +83,20 @@ func TestMergeMCPServerRules(t *testing.T) {
 	require.Equal(t, lower, mergeMCPServerRules(lower, nil))
 	require.Nil(t, mergeMCPServerRules(nil, nil))
 }
+
+func TestMergeMCPConfig(t *testing.T) {
+	lower := &MCPConfig{Servers: map[string]MCPServerConfig{
+		"base": {Type: "stdio", Command: "node"},
+	}}
+	higher := &MCPConfig{Servers: map[string]MCPServerConfig{
+		"remote": {Type: "http", URL: "https://example"},
+	}}
+
+	out := mergeMCPConfig(lower, higher)
+	require.Len(t, out.Servers, 2)
+	require.Equal(t, "node", out.Servers["base"].Command)
+	require.Equal(t, "https://example", out.Servers["remote"].URL)
+
+	out.Servers["base"] = MCPServerConfig{}
+	require.Equal(t, "node", lower.Servers["base"].Command)
+}
