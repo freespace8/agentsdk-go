@@ -150,6 +150,7 @@ func buildStdioTransport(ctx context.Context, cmdSpec string) (mcpsdk.Transport,
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("mcp adapter: stdio command is empty")
 	}
+	// #nosec G204 -- cmdSpec originates from trusted MCP server config, not arbitrary user input
 	command := exec.CommandContext(nonNilContext(ctx), parts[0], parts[1:]...)
 	return &mcpsdk.CommandTransport{Command: command}, nil
 }

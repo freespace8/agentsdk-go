@@ -90,7 +90,11 @@ func TestSanitizePayloadVariants(t *testing.T) {
 	}
 
 	raw := json.RawMessage(`{"foo":1}`)
-	cloned := sanitizePayload(raw).(json.RawMessage)
+	clonedPayload, ok := sanitizePayload(raw).(json.RawMessage)
+	if !ok {
+		t.Fatalf("expected json.RawMessage copy, got %#v", clonedPayload)
+	}
+	cloned := clonedPayload
 	cloned[0] = 'x'
 	if raw[0] == 'x' {
 		t.Fatalf("raw message should be copied before returning")

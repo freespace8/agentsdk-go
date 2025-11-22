@@ -97,7 +97,7 @@ func TestClientListToolsAndInvoke(t *testing.T) {
 	client, cleanup := setupTestClient(t, &builderCalls)
 	defer cleanup()
 
-	tools, err := client.ListTools(nil)
+	tools, err := client.ListTools(context.Background())
 	if err != nil {
 		t.Fatalf("ListTools failed: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestClientListToolsAndInvoke(t *testing.T) {
 	}
 
 	// Ensure repeated calls do not reconnect.
-	if _, err := client.ListTools(nil); err != nil {
+	if _, err := client.ListTools(context.Background()); err != nil {
 		t.Fatalf("ListTools second call failed: %v", err)
 	}
 	if builderCalls.Load() != 1 {
@@ -127,7 +127,7 @@ func TestClientListToolsAndInvoke(t *testing.T) {
 	}
 
 	// Invoke tool.
-	res, err := client.InvokeTool(nil, "echo", map[string]interface{}{"text": "hi"})
+	res, err := client.InvokeTool(context.Background(), "echo", map[string]interface{}{"text": "hi"})
 	if err != nil {
 		t.Fatalf("InvokeTool failed: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestClientCallInitializeAndUnsupported(t *testing.T) {
 	client, cleanup := setupTestClient(t, nil)
 	defer cleanup()
 
-	if err := client.Call(nil, "initialize", nil, nil); err != nil {
+	if err := client.Call(context.Background(), "initialize", nil, nil); err != nil {
 		t.Fatalf("initialize should connect: %v", err)
 	}
 	if err := client.Call(context.Background(), "shutdown", nil, nil); err == nil {

@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestBuildTransportStdioVariants(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tr, err := buildTransport(nil, tc.spec)
+			tr, err := buildTransport(context.Background(), tc.spec)
 			if err != nil {
 				t.Fatalf("buildTransport returned error: %v", err)
 			}
@@ -58,7 +59,7 @@ func TestBuildTransportSSEVariants(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tr, err := buildTransport(nil, tc.spec)
+			tr, err := buildTransport(context.Background(), tc.spec)
 			if err != nil {
 				t.Fatalf("buildTransport returned error: %v", err)
 			}
@@ -87,7 +88,7 @@ func TestBuildTransportHTTPHints(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tr, err := buildTransport(nil, tc.spec)
+			tr, err := buildTransport(context.Background(), tc.spec)
 			if err != nil {
 				t.Fatalf("buildTransport returned error: %v", err)
 			}
@@ -119,7 +120,7 @@ func TestBuildTransportInvalidSpecs(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := buildTransport(nil, tc.spec); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			if _, err := buildTransport(context.Background(), tc.spec); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
 			}
 		})
