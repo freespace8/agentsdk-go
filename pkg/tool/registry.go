@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -13,27 +14,19 @@ import (
 
 // Registry keeps the mapping between tool names and implementations.
 type Registry struct {
-	mu         sync.RWMutex
-	tools      map[string]Tool
-	mcpClients []mcpClient
-	validator  Validator
+	mu          sync.RWMutex
+	tools       map[string]Tool
+	mcpSessions []*mcp.ClientSession
+	validator   Validator
 }
 
-type mcpClient interface {
-	Call(ctx context.Context, method string, params interface{}, dest interface{}) error
-	ListTools(ctx context.Context) ([]mcp.ToolDescriptor, error)
-	InvokeTool(ctx context.Context, name string, params map[string]interface{}) (*mcp.ToolCallResult, error)
-	Close() error
-}
-
-var newMCPClient = func(spec string) mcpClient {
-	return mcp.NewClient(spec)
+var newMCPClient = func(ctx context.Context, spec string) (*mcp.ClientSession, error) {
+	return mcp.ConnectSession(ctx, spec)
 }
 
 const (
-	mcpDefaultProtocolVersion = "2025-06-18"
-	mcpClientName             = "agentsdk-go"
-	mcpClientVersion          = "dev"
+	httpHintType = "http"
+	sseHintType  = "sse"
 )
 
 // NewRegistry creates a registry backed by the default validator.
@@ -122,31 +115,47 @@ func (r *Registry) Execute(ctx context.Context, name string, params map[string]i
 
 // RegisterMCPServer discovers tools exposed by an MCP server and registers them.
 // serverPath accepts either an http(s) URL (SSE transport) or a stdio command.
-func (r *Registry) RegisterMCPServer(serverPath string) error {
+func (r *Registry) RegisterMCPServer(ctx context.Context, serverPath string) error {
+	ctx = nonNilContext(ctx)
 	if strings.TrimSpace(serverPath) == "" {
 		return fmt.Errorf("server path is empty")
 	}
-	// 建立 MCP 连接后需要保持事件流存活，因此初始化阶段使用独立的上下文。
-	connectCtx := context.Background()
+	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	client := newMCPClient(serverPath)
+	session, err := newMCPClient(connectCtx, serverPath)
+	if err != nil {
+		if ctxErr := connectCtx.Err(); ctxErr != nil {
+			return fmt.Errorf("connect MCP client: %w", ctxErr)
+		}
+		return fmt.Errorf("connect MCP client: %w", err)
+	}
+	if session == nil {
+		return fmt.Errorf("connect MCP client: session is nil")
+	}
 	success := false
 	defer func() {
 		if !success {
-			_ = client.Close()
+			_ = session.Close()
 		}
 	}()
 
-	if err := initializeMCPClient(connectCtx, client); err != nil {
+	if err := mcp.EnsureSessionInitialized(connectCtx, session); err != nil {
 		return fmt.Errorf("initialize MCP client: %w", err)
 	}
+	if err := connectCtx.Err(); err != nil {
+		return fmt.Errorf("connect MCP client: %w", err)
+	}
 
-	listCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	tools, err := client.ListTools(listCtx)
-	if err != nil {
-		return fmt.Errorf("list MCP tools: %w", err)
+	var tools []*mcp.Tool
+	for tool, iterErr := range session.Tools(listCtx, nil) {
+		if iterErr != nil {
+			return fmt.Errorf("list MCP tools: %w", iterErr)
+		}
+		tools = append(tools, tool)
 	}
 	if len(tools) == 0 {
 		return fmt.Errorf("MCP server returned no tools")
@@ -160,7 +169,7 @@ func (r *Registry) RegisterMCPServer(serverPath string) error {
 		if r.hasTool(desc.Name) {
 			return fmt.Errorf("tool %s already registered", desc.Name)
 		}
-		schema, err := convertMCPSchema(desc.Schema)
+		schema, err := convertMCPSchema(desc.InputSchema)
 		if err != nil {
 			return fmt.Errorf("parse schema for %s: %w", desc.Name, err)
 		}
@@ -168,7 +177,7 @@ func (r *Registry) RegisterMCPServer(serverPath string) error {
 			name:        desc.Name,
 			description: desc.Description,
 			schema:      schema,
-			client:      client,
+			session:     session,
 		})
 	}
 
@@ -179,11 +188,29 @@ func (r *Registry) RegisterMCPServer(serverPath string) error {
 	}
 
 	r.mu.Lock()
-	r.mcpClients = append(r.mcpClients, client)
+	r.mcpSessions = append(r.mcpSessions, session)
 	r.mu.Unlock()
 
 	success = true
 	return nil
+}
+
+// Close terminates all tracked MCP sessions.
+// Errors are logged and ignored to avoid masking shutdown flows.
+func (r *Registry) Close() {
+	r.mu.Lock()
+	sessions := r.mcpSessions
+	r.mcpSessions = nil
+	r.mu.Unlock()
+
+	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
+		if err := session.Close(); err != nil {
+			log.Printf("tool registry: close MCP session: %v", err)
+		}
+	}
 }
 
 func (r *Registry) hasTool(name string) bool {
@@ -193,16 +220,37 @@ func (r *Registry) hasTool(name string) bool {
 	return exists
 }
 
-func convertMCPSchema(raw json.RawMessage) (*JSONSchema, error) {
-	if len(raw) == 0 {
+func convertMCPSchema(raw any) (*JSONSchema, error) {
+	if raw == nil {
 		return nil, nil
 	}
+	var (
+		data []byte
+		err  error
+	)
+	switch v := raw.(type) {
+	case json.RawMessage:
+		if len(v) == 0 {
+			return nil, nil
+		}
+		data = v
+	case []byte:
+		if len(v) == 0 {
+			return nil, nil
+		}
+		data = v
+	default:
+		data, err = json.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
 	var schema JSONSchema
-	if err := json.Unmarshal(raw, &schema); err == nil && schema.Type != "" {
+	if err := json.Unmarshal(data, &schema); err == nil && schema.Type != "" {
 		return &schema, nil
 	}
 	var generic map[string]interface{}
-	if err := json.Unmarshal(raw, &generic); err != nil {
+	if err := json.Unmarshal(data, &generic); err != nil {
 		return nil, err
 	}
 	if t, ok := generic["type"].(string); ok {
@@ -221,38 +269,41 @@ func convertMCPSchema(raw json.RawMessage) (*JSONSchema, error) {
 	return &schema, nil
 }
 
-func initializeMCPClient(ctx context.Context, client mcpClient) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+// Compatibility wrappers keep registry tests aligned with the shared MCP
+// transport builders now hosted in the mcp package.
+func buildMCPSessionTransport(ctx context.Context, spec string) (mcp.Transport, error) {
+	return mcp.BuildSessionTransport(ctx, spec)
+}
 
-	params := map[string]interface{}{
-		"protocolVersion": mcpDefaultProtocolVersion,
-		"capabilities":    map[string]interface{}{},
-		"clientInfo": map[string]interface{}{
-			"name":    mcpClientName,
-			"version": mcpClientVersion,
-		},
-	}
+func buildSSETransport(endpoint string, allowSchemeGuess bool) (mcp.Transport, error) {
+	return mcp.BuildSSETransport(endpoint, allowSchemeGuess)
+}
 
-	// Some servers (older MCP drafts) do not require initialization. If the method
-	// is missing, continue so the example remains backward compatible.
-	var out map[string]interface{}
-	if err := client.Call(ctx, "initialize", params, &out); err != nil {
-		if mcpErr, ok := err.(*mcp.Error); ok && mcpErr.Code == -32601 {
-			return nil
-		}
-		return err
-	}
+func buildStreamableTransport(endpoint string) (mcp.Transport, error) {
+	return mcp.BuildStreamableTransport(endpoint)
+}
 
-	return nil
+func buildStdioTransport(ctx context.Context, cmdSpec string) (mcp.Transport, error) {
+	return mcp.BuildStdioTransport(ctx, cmdSpec)
+}
+
+func parseHTTPFamilySpec(spec string) (kind string, endpoint string, matched bool, err error) {
+	return mcp.ParseHTTPFamilySpec(spec)
+}
+
+func normalizeHTTPURL(raw string, allowSchemeGuess bool) (string, error) {
+	return mcp.NormalizeHTTPURL(raw, allowSchemeGuess)
+}
+
+func nonNilContext(ctx context.Context) context.Context {
+	return mcp.NonNilContext(ctx)
 }
 
 type remoteTool struct {
 	name        string
 	description string
 	schema      *JSONSchema
-	client      mcpClient
+	session     *mcp.ClientSession
 }
 
 func (r *remoteTool) Name() string        { return r.name }
@@ -260,16 +311,40 @@ func (r *remoteTool) Description() string { return r.description }
 func (r *remoteTool) Schema() *JSONSchema { return r.schema }
 
 func (r *remoteTool) Execute(ctx context.Context, params map[string]interface{}) (*ToolResult, error) {
+	if r.session == nil {
+		return nil, fmt.Errorf("mcp session is nil")
+	}
 	if params == nil {
 		params = map[string]interface{}{}
 	}
-	res, err := r.client.InvokeTool(ctx, r.name, params)
+	res, err := r.session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      r.name,
+		Arguments: params,
+	})
 	if err != nil {
 		return nil, err
 	}
+	if res == nil {
+		return nil, fmt.Errorf("MCP call returned nil result")
+	}
+	output := firstTextContent(res.Content)
+	if output == "" {
+		if payload, err := json.Marshal(res.Content); err == nil {
+			output = string(payload)
+		}
+	}
 	return &ToolResult{
 		Success: true,
-		Output:  string(res.Content),
+		Output:  output,
 		Data:    res.Content,
 	}, nil
+}
+
+func firstTextContent(content []mcp.Content) string {
+	for _, part := range content {
+		if txt, ok := part.(*mcp.TextContent); ok {
+			return txt.Text
+		}
+	}
+	return ""
 }
