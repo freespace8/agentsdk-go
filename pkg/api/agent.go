@@ -1013,6 +1013,21 @@ func registerTools(registry *tool.Registry, opts Options, settings *config.Setti
 		taskTool = locateTaskTool(tools)
 	}
 
+	disallowed := toLowerSet(opts.DisallowedTools)
+	if settings != nil && len(settings.DisallowedTools) > 0 {
+		if disallowed == nil {
+			disallowed = map[string]struct{}{}
+		}
+		for _, name := range settings.DisallowedTools {
+			if key := canonicalToolName(name); key != "" {
+				disallowed[key] = struct{}{}
+			}
+		}
+		if len(disallowed) == 0 {
+			disallowed = nil
+		}
+	}
+
 	seen := make(map[string]struct{})
 	for _, impl := range tools {
 		if impl == nil {
@@ -1023,6 +1038,12 @@ func registerTools(registry *tool.Registry, opts Options, settings *config.Setti
 			continue
 		}
 		canon := canonicalToolName(name)
+		if disallowed != nil {
+			if _, blocked := disallowed[canon]; blocked {
+				log.Printf("tool %s skipped: disallowed", name)
+				continue
+			}
+		}
 		if _, ok := seen[canon]; ok {
 			log.Printf("tool %s skipped: duplicate name", name)
 			continue
@@ -1095,6 +1116,7 @@ func builtinToolFactories(root string, sandboxDisabled bool, entry EntryPoint, s
 	factories["web_fetch"] = func() tool.Tool { return toolbuiltin.NewWebFetchTool(nil) }
 	factories["web_search"] = func() tool.Tool { return toolbuiltin.NewWebSearchTool(nil) }
 	factories["bash_output"] = func() tool.Tool { return toolbuiltin.NewBashOutputTool(nil) }
+	factories["kill_task"] = func() tool.Tool { return toolbuiltin.NewKillTaskTool() }
 	factories["todo_write"] = func() tool.Tool { return toolbuiltin.NewTodoWriteTool() }
 	factories["skill"] = func() tool.Tool { return toolbuiltin.NewSkillTool(skReg, nil) }
 	factories["slash_command"] = func() tool.Tool { return toolbuiltin.NewSlashCommandTool(cmdExec) }
@@ -1115,6 +1137,7 @@ func builtinOrder(entry EntryPoint) []string {
 		"web_fetch",
 		"web_search",
 		"bash_output",
+		"kill_task",
 		"todo_write",
 		"skill",
 		"slash_command",
