@@ -56,6 +56,39 @@ agentsdk-go 是一个模块化的 Agent 开发框架，实现了 Claude Code 的
 
 此外，功能层还包含 `pkg/config`（配置加载/热更新）、`pkg/core/events`（事件总线）和 `pkg/security`（命令与路径校验）等支撑包。
 
+### 架构图
+
+```mermaid
+flowchart TB
+  subgraph Core
+    API[pkg/api] --> Agent[pkg/agent]
+    Agent --> Model[pkg/model]
+    Agent --> Tool[pkg/tool]
+    Agent --> Message[pkg/message]
+    Middleware[pkg/middleware] -. intercepts .-> Agent
+  end
+
+  subgraph Feature
+    Config[pkg/config]
+    Hooks[pkg/core/hooks]
+    Events[pkg/core/events]
+    Runtime[pkg/runtime/*]
+    MCP[pkg/mcp]
+    Sandbox[pkg/sandbox]
+    Security[pkg/security]
+    Plugins[pkg/plugins]
+  end
+
+  Config --> API
+  Hooks --> Agent
+  Events --> Agent
+  Runtime --> Agent
+  MCP --> Tool
+  Tool --> Sandbox
+  Tool --> Security
+  Plugins --> Agent
+```
+
 ### Middleware 拦截点
 
 SDK 在请求处理的关键节点提供拦截能力：

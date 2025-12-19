@@ -65,6 +65,39 @@ agentsdk-go is a modular agent development framework that implements Claude Code
 
 In addition, the feature layer includes supporting packages such as `pkg/config` (configuration loading/hot reload), `pkg/core/events` (event bus), and `pkg/security` (command and path validation).
 
+### Architecture Diagram
+
+```mermaid
+flowchart TB
+  subgraph Core
+    API[pkg/api] --> Agent[pkg/agent]
+    Agent --> Model[pkg/model]
+    Agent --> Tool[pkg/tool]
+    Agent --> Message[pkg/message]
+    Middleware[pkg/middleware] -. intercepts .-> Agent
+  end
+
+  subgraph Feature
+    Config[pkg/config]
+    Hooks[pkg/core/hooks]
+    Events[pkg/core/events]
+    Runtime[pkg/runtime/*]
+    MCP[pkg/mcp]
+    Sandbox[pkg/sandbox]
+    Security[pkg/security]
+    Plugins[pkg/plugins]
+  end
+
+  Config --> API
+  Hooks --> Agent
+  Events --> Agent
+  Runtime --> Agent
+  MCP --> Tool
+  Tool --> Sandbox
+  Tool --> Security
+  Plugins --> Agent
+```
+
 ### Middleware Interception Points
 
 The SDK exposes interception at critical stages of request handling:
