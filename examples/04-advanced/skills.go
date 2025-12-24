@@ -43,7 +43,7 @@ func buildSkills() []api.SkillRegistration {
 
 	reg = append(reg, api.SkillRegistration{
 		Definition: skills.Definition{
-			Name:        "log_summary",
+			Name:        "log-summary",
 			Description: "提炼 noisy 日志并输出一句话总结。",
 			Priority:    10,
 			Matchers: []skills.Matcher{
@@ -66,7 +66,7 @@ func buildSkills() []api.SkillRegistration {
 
 	reg = append(reg, api.SkillRegistration{
 		Definition: skills.Definition{
-			Name:                  "add_note",
+			Name:                  "add-note",
 			Description:           "手动添加备注，演示 DisableAutoActivation 用法。",
 			DisableAutoActivation: true,
 		},

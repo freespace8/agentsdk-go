@@ -22,8 +22,7 @@ How to use skills:
 - The skill's prompt will expand and provide detailed instructions on how to complete the task
 - Examples:
   - command: "pdf" - invoke the pdf skill
-  - command: "xlsx" - invoke the xlsx skill
-  - command: "ms-office-suite:pdf" - invoke using fully qualified name
+  - command: "excel-parser" - invoke the excel-parser skill
 
 Important:
 - Only use skills listed in <available_skills> below

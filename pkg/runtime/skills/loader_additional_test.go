@@ -39,18 +39,13 @@ func TestLoadSupportFilesErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scripts"), []byte("not a dir"), 0o600); err != nil {
 		t.Fatalf("prep: %v", err)
 	}
-
-	restore := SetReadFileForTest(func(path string) ([]byte, error) {
-		if strings.HasSuffix(path, "reference.md") {
-			return nil, fs.ErrPermission
-		}
-		return os.ReadFile(path)
-	})
-	defer restore()
+	if err := os.WriteFile(filepath.Join(dir, "references"), []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("prep: %v", err)
+	}
 
 	support, errs := loadSupportFiles(dir)
-	if len(errs) < 2 { // one for scripts not being a dir, one for reference read failure
-		t.Fatalf("expected aggregated errors, got %v", errs)
+	if len(errs) != 2 {
+		t.Fatalf("expected two errors, got %v", errs)
 	}
 	if support != nil {
 		t.Fatalf("expected no support files, got %v", support)
@@ -117,20 +112,11 @@ func TestReadFrontMatterWithBOM(t *testing.T) {
 func TestLoadSkillContentSupportError(t *testing.T) {
 	dir := t.TempDir()
 	skillPath := filepath.Join(dir, "SKILL.md")
-	reference := filepath.Join(dir, "reference.md")
 	writeSkill(t, skillPath, "lazy", "body")
-	mustWrite(t, reference, "ref")
+	mustWrite(t, filepath.Join(dir, "scripts"), "not a directory")
 
-	restore := SetReadFileForTest(func(path string) ([]byte, error) {
-		if path == reference {
-			return nil, fs.ErrPermission
-		}
-		return os.ReadFile(path)
-	})
-	defer restore()
-
-	if _, err := loadSkillContent(SkillFile{Path: skillPath, Metadata: SkillMetadata{Name: "lazy"}}); err == nil {
-		t.Fatalf("expected support load error")
+	if _, err := loadSkillContent(SkillFile{Path: skillPath, Metadata: SkillMetadata{Name: "lazy"}}); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected support dir error, got %v", err)
 	}
 }
 

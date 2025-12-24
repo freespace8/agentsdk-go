@@ -17,7 +17,7 @@ func TestHandlerLazyLoadsOnFirstExecute(t *testing.T) {
 	dir := filepath.Join(root, ".claude", "skills", "lazy")
 
 	writeSkill(t, filepath.Join(dir, "SKILL.md"), "lazy", "lazy body")
-	mustWrite(t, filepath.Join(dir, "reference.md"), "ref")
+	mustWrite(t, filepath.Join(dir, "scripts", "setup.sh"), "echo hi")
 
 	calls := map[string]int{}
 	var mu sync.Mutex
@@ -52,14 +52,17 @@ func TestHandlerLazyLoadsOnFirstExecute(t *testing.T) {
 	if output["body"] != "lazy body" {
 		t.Fatalf("unexpected body: %#v", output["body"])
 	}
+	support, ok := output["support_files"].(map[string][]string)
+	require.True(t, ok)
+	require.Equal(t, []string{"setup.sh"}, support["scripts"])
 
 	mu.Lock()
 	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("expected a single SKILL.md read, got %v", calls)
+	}
 	if calls[filepath.Join(dir, "SKILL.md")] != 1 {
 		t.Fatalf("expected SKILL.md to be read once, got %d", calls[filepath.Join(dir, "SKILL.md")])
-	}
-	if calls[filepath.Join(dir, "reference.md")] != 1 {
-		t.Fatalf("expected reference.md to be read once, got %d", calls[filepath.Join(dir, "reference.md")])
 	}
 }
 

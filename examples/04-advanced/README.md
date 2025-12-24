@@ -23,7 +23,7 @@ Useful flags:
 - `--enable-mcp` toggle MCP server registration (requires `uvx` in PATH).
 - `--enable-trace` and `--trace-dir trace-out` to inspect trace logs.
 - `--enable-hooks/--enable-skills/--enable-subagents/--enable-commands/--enable-plugins/--enable-sandbox` to isolate components.
-- `--force-skill add_note` to run manual skills; `--target-subagent plan` to pin a subagent.
+- `--force-skill add-note` to run manual skills; `--target-subagent plan` to pin a subagent.
 
 ## Expected output
 - Final agent message that merges tool results (observe_logs + optional MCP time).

@@ -191,7 +191,7 @@ func parseConfig() runConfig {
 	flag.IntVar(&cfg.rps, "rps", 5, "token bucket refill rate per second")
 	flag.IntVar(&cfg.burst, "burst", 10, "token bucket burst size")
 	flag.IntVar(&cfg.concurrent, "concurrent", 2, "maximum concurrent agent runs")
-	flag.StringVar(&cfg.forceSkill, "force-skill", "add_note", "force a skill to run")
+	flag.StringVar(&cfg.forceSkill, "force-skill", "add-note", "force a skill to run")
 	flag.StringVar(&cfg.targetSubagent, "target-subagent", "", "force a subagent name (empty=auto)")
 	flag.StringVar(&cfg.severity, "severity", "high", "tag: severity level")
 	flag.Parse()

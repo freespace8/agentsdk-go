@@ -27,23 +27,74 @@ type LoaderOptions struct {
 	EnableUser bool
 }
 
-// SkillFile captures an on-disk SKILL.md plus its support files.
+// SkillFile captures an on-disk SKILL.md entry.
 type SkillFile struct {
-	Name         string
-	Path         string
-	Metadata     SkillMetadata
-	Body         string
-	SupportFiles map[string]string
+	Name     string
+	Path     string
+	Metadata SkillMetadata
 }
 
 // readFile is swappable in tests to track filesystem IO.
 var readFile = os.ReadFile
 
+// ToolList supports YAML string or sequence, normalizing to a de-duplicated list.
+type ToolList []string
+
+func (t *ToolList) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Tag == "!!null" {
+		*t = nil
+		return nil
+	}
+
+	var tools []string
+	switch value.Kind {
+	case yaml.ScalarNode:
+		for _, entry := range strings.Split(value.Value, ",") {
+			tool := strings.TrimSpace(entry)
+			if tool != "" {
+				tools = append(tools, tool)
+			}
+		}
+	case yaml.SequenceNode:
+		for i, entry := range value.Content {
+			if entry.Kind != yaml.ScalarNode {
+				return fmt.Errorf("allowed-tools[%d]: expected string", i)
+			}
+			tool := strings.TrimSpace(entry.Value)
+			if tool != "" {
+				tools = append(tools, tool)
+			}
+		}
+	default:
+		return errors.New("allowed-tools: expected string or sequence")
+	}
+
+	seen := map[string]struct{}{}
+	deduped := tools[:0]
+	for _, tool := range tools {
+		if _, ok := seen[tool]; ok {
+			continue
+		}
+		seen[tool] = struct{}{}
+		deduped = append(deduped, tool)
+	}
+
+	if len(deduped) == 0 {
+		*t = nil
+		return nil
+	}
+	*t = ToolList(deduped)
+	return nil
+}
+
 // SkillMetadata mirrors the YAML frontmatter fields inside SKILL.md.
 type SkillMetadata struct {
-	Name         string `yaml:"name"`
-	Description  string `yaml:"description"`
-	AllowedTools string `yaml:"allowed-tools"`
+	Name          string            `yaml:"name"`
+	Description   string            `yaml:"description"`
+	License       string            `yaml:"license,omitempty"`
+	Compatibility string            `yaml:"compatibility,omitempty"`
+	Metadata      map[string]string `yaml:"metadata,omitempty"`
+	AllowedTools  ToolList          `yaml:"allowed-tools,omitempty"`
 }
 
 // SkillRegistration wires a definition to its handler.
@@ -52,7 +103,13 @@ type SkillRegistration struct {
 	Handler    Handler
 }
 
-var skillNameRegexp = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+// Skill names must be 1-64 characters, lowercase alphanumeric plus hyphens, and
+// cannot start or end with a hyphen.
+var skillNameRegexp = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`)
+
+func isValidSkillName(name string) bool {
+	return skillNameRegexp.MatchString(strings.TrimSpace(name))
+}
 
 // LoadFromFS loads skills from the filesystem. Errors are aggregated so one
 // broken file will not block others. Duplicate names are skipped with a
@@ -120,30 +177,28 @@ func loadSkillDir(root string) ([]SkillFile, []error) {
 		return nil, []error{fmt.Errorf("skills: path %s is not a directory", root)}
 	}
 
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			errs = append(errs, fmt.Errorf("skills: walk %s: %w", path, walkErr))
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if d.Name() != "SKILL.md" {
-			return nil
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, []error{fmt.Errorf("skills: read dir %s: %w", root, err)}
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
 
-		dirName := filepath.Base(filepath.Dir(path))
+		dirName := entry.Name()
+		path := filepath.Join(root, dirName, "SKILL.md")
 		file, parseErr := parseSkillFile(path, dirName)
 		if parseErr != nil {
+			if errors.Is(parseErr, fs.ErrNotExist) {
+				continue
+			}
 			errs = append(errs, parseErr)
-			return nil
+			continue
 		}
 
 		results = append(results, file)
-		return nil
-	})
-	if walkErr != nil {
-		errs = append(errs, walkErr)
 	}
 	return results, errs
 }
@@ -255,30 +310,18 @@ func validateMetadata(meta SkillMetadata) error {
 	if len(desc) > 1024 {
 		return errors.New("description exceeds 1024 characters")
 	}
+	compat := strings.TrimSpace(meta.Compatibility)
+	if len(compat) > 500 {
+		return errors.New("compatibility exceeds 500 characters")
+	}
 	return nil
 }
 
-func loadSupportFiles(dir string) (map[string]string, []error) {
-	out := map[string]string{}
+func loadSupportFiles(dir string) (map[string][]string, []error) {
+	out := map[string][]string{}
 	var errs []error
 
-	readOptional := func(name string) {
-		path := filepath.Join(dir, name)
-		data, err := readFile(path)
-		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				errs = append(errs, fmt.Errorf("skills: read %s: %w", path, err))
-			}
-			return
-		}
-		out[name] = string(data)
-	}
-
-	for _, file := range []string{"reference.md", "examples.md"} {
-		readOptional(file)
-	}
-
-	for _, sub := range []string{"scripts", "templates"} {
+	for _, sub := range []string{"scripts", "references", "assets"} {
 		root := filepath.Join(dir, sub)
 		info, err := os.Stat(root)
 		if err != nil {
@@ -291,6 +334,8 @@ func loadSupportFiles(dir string) (map[string]string, []error) {
 			errs = append(errs, fmt.Errorf("skills: %s is not a directory", root))
 			continue
 		}
+
+		var files []string
 		if walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				errs = append(errs, fmt.Errorf("skills: walk %s: %w", path, walkErr))
@@ -299,19 +344,21 @@ func loadSupportFiles(dir string) (map[string]string, []error) {
 			if d.IsDir() {
 				return nil
 			}
-			data, err := readFile(path)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("skills: read %s: %w", path, err))
-				return nil
-			}
-			rel, err := filepath.Rel(dir, path)
+
+			rel, err := filepath.Rel(root, path)
 			if err != nil {
 				rel = d.Name()
 			}
-			out[filepath.ToSlash(rel)] = string(data)
+			files = append(files, filepath.ToSlash(rel))
 			return nil
 		}); walkErr != nil {
 			errs = append(errs, fmt.Errorf("skills: walk %s: %w", root, walkErr))
+			continue
+		}
+
+		sort.Strings(files)
+		if len(files) > 0 {
+			out[sub] = files
 		}
 	}
 
@@ -322,16 +369,42 @@ func loadSupportFiles(dir string) (map[string]string, []error) {
 }
 
 func buildDefinitionMetadata(file SkillFile) map[string]string {
-	meta := map[string]string{}
-	if file.Metadata.AllowedTools != "" {
-		meta["allowed-tools"] = strings.TrimSpace(file.Metadata.AllowedTools)
+	var meta map[string]string
+	if len(file.Metadata.Metadata) > 0 {
+		meta = make(map[string]string, len(file.Metadata.Metadata)+4)
+		for k, v := range file.Metadata.Metadata {
+			meta[k] = v
+		}
 	}
+
+	if tools := file.Metadata.AllowedTools; len(tools) > 0 {
+		if meta == nil {
+			meta = map[string]string{}
+		}
+		meta["allowed-tools"] = strings.Join(tools, ",")
+	}
+
+	if license := strings.TrimSpace(file.Metadata.License); license != "" {
+		if meta == nil {
+			meta = map[string]string{}
+		}
+		meta["license"] = license
+	}
+
+	if compat := strings.TrimSpace(file.Metadata.Compatibility); compat != "" {
+		if meta == nil {
+			meta = map[string]string{}
+		}
+		meta["compatibility"] = compat
+	}
+
 	if file.Path != "" {
+		if meta == nil {
+			meta = map[string]string{}
+		}
 		meta["source"] = file.Path
 	}
-	if len(meta) == 0 {
-		return nil
-	}
+
 	return meta
 }
 
@@ -357,15 +430,18 @@ func loadSkillContent(file SkillFile) (Result, error) {
 	output := map[string]any{"body": body}
 	meta := map[string]any{}
 
-	allowed := strings.TrimSpace(file.Metadata.AllowedTools)
-	if allowed != "" {
-		meta["allowed-tools"] = allowed
+	if len(file.Metadata.AllowedTools) > 0 {
+		meta["allowed-tools"] = []string(file.Metadata.AllowedTools)
 	}
 	meta["source"] = file.Path
 
 	if len(support) > 0 {
 		output["support_files"] = support
-		meta["support-file-count"] = len(support)
+		count := 0
+		for _, files := range support {
+			count += len(files)
+		}
+		meta["support-file-count"] = count
 	}
 
 	if len(meta) == 0 {

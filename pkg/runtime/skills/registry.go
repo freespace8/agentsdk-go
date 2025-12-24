@@ -36,10 +36,8 @@ func (d Definition) Validate() error {
 	if name == "" {
 		return errors.New("skills: name is required")
 	}
-	for _, r := range name {
-		if !(r == '-' || r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
-			return fmt.Errorf("skills: invalid name %q", d.Name)
-		}
+	if !isValidSkillName(name) {
+		return fmt.Errorf("skills: invalid name %q (must be 1-64 chars, lowercase alphanumeric + hyphens, cannot start/end with hyphen)", d.Name)
 	}
 	return nil
 }
