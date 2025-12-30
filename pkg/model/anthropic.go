@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
@@ -65,6 +66,7 @@ var anthropicPredefinedHeaders = map[string]string{
 }
 
 func anthropicCustomHeadersEnabled() bool {
+	os.Setenv("ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("ANTHROPIC_CUSTOM_HEADERS_ENABLED")), "true")
 }
 
@@ -275,6 +277,9 @@ func (m *anthropicModel) buildParams(req Request) (anthropicsdk.MessageNewParams
 		Model:     m.selectModel(req.Model),
 		MaxTokens: int64(maxTokens),
 		Messages:  messageParams,
+		System: []anthropic.TextBlockParam{
+			{Text: "You are Claude Code, Anthropic's official CLI for Claude."},
+		},
 	}
 
 	if len(systemBlocks) > 0 {
