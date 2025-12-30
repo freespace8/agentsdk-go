@@ -67,8 +67,8 @@ func TestCompleteBuildsRequestAndParsesToolUse(t *testing.T) {
 	if got := int(seen.MaxTokens); got != 64 {
 		t.Fatalf("max tokens mismatch: %d", got)
 	}
-	if len(seen.System) != 3 { // base-system + inline-system + inline role system
-		t.Fatalf("expected 3 system blocks, got %d", len(seen.System))
+	if len(seen.System) != 4 { // claude-code + base-system + inline-system + inline role system
+		t.Fatalf("expected 4 system blocks, got %d", len(seen.System))
 	}
 	if len(seen.Messages) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(seen.Messages))
@@ -1178,8 +1178,8 @@ func TestPromptCacheEnabled(t *testing.T) {
 	}
 
 	// Verify system blocks have cache control on the last block
-	if len(seen.System) != 2 {
-		t.Fatalf("expected 2 system blocks, got %d", len(seen.System))
+	if len(seen.System) != 3 {
+		t.Fatalf("expected 3 system blocks, got %d", len(seen.System))
 	}
 	lastSysBlock := seen.System[len(seen.System)-1]
 	if lastSysBlock.CacheControl.Type == "" {
