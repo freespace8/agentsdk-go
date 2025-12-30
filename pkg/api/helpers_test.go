@@ -91,7 +91,7 @@ func TestEnforceSandboxHostIgnoresSTDIO(t *testing.T) {
 func TestRegisterMCPServersDeniesUnauthorizedHost(t *testing.T) {
 	registry := tool.NewRegistry()
 	mgr := sandbox.NewManager(nil, sandbox.NewDomainAllowList("allowed.example"), nil)
-	err := registerMCPServers(context.Background(), registry, mgr, []string{"http://denied.example"})
+	err := registerMCPServers(context.Background(), registry, mgr, []mcpServer{{Spec: "http://denied.example"}})
 	if err == nil {
 		t.Fatal("expected host denial error")
 	}
@@ -103,7 +103,7 @@ func TestRegisterMCPServersDeniesUnauthorizedHost(t *testing.T) {
 func TestRegisterMCPServersPropagatesRegistryErrors(t *testing.T) {
 	registry := tool.NewRegistry()
 	mgr := sandbox.NewManager(nil, sandbox.NewDomainAllowList(), nil)
-	err := registerMCPServers(context.Background(), registry, mgr, []string{""})
+	err := registerMCPServers(context.Background(), registry, mgr, []mcpServer{{Spec: ""}})
 	if err == nil {
 		t.Fatal("expected registry error")
 	}

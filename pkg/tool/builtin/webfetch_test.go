@@ -12,23 +12,57 @@ import (
 	"time"
 )
 
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func newInMemoryHTTPClient(handler http.Handler) *http.Client {
+	return &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			recorder := httptest.NewRecorder()
+
+			done := make(chan struct{})
+			go func() {
+				handler.ServeHTTP(recorder, req)
+				if req.Body != nil {
+					req.Body.Close()
+				}
+				close(done)
+			}()
+
+			select {
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			case <-done:
+			}
+
+			resp := recorder.Result()
+			resp.Request = req
+			return resp, nil
+		}),
+	}
+}
+
 func TestWebFetchConvertsHTMLAndCaches(t *testing.T) {
 	serverCalls := 0
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	host := "example.test"
+	baseURL := "https://" + host
+	client := newInMemoryHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serverCalls++
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("<html><body><h1>Hello</h1><p>Welcome to <strong>Agents</strong>.</p></body></html>"))
 	}))
-	t.Cleanup(server.Close)
 
 	tool := NewWebFetchTool(&WebFetchOptions{
-		HTTPClient:        server.Client(),
+		HTTPClient:        client,
 		CacheTTL:          time.Minute,
-		AllowedHosts:      []string{serverHost(t, server.URL)},
+		AllowedHosts:      []string{host},
 		AllowPrivateHosts: true,
 	})
 
-	url := strings.Replace(server.URL+"/page", "https://", "http://", 1)
+	url := strings.Replace(baseURL+"/page", "https://", "http://", 1)
 	params := map[string]interface{}{
 		"url":    url,
 		"prompt": "summarise",
@@ -76,18 +110,19 @@ func TestWebFetchRejectsBlockedHosts(t *testing.T) {
 }
 
 func TestWebFetchReturnsRedirectNotice(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	host := "example.test"
+	baseURL := "https://" + host
+	client := newInMemoryHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://example.org/article", http.StatusFound)
 	}))
-	t.Cleanup(server.Close)
 
 	tool := NewWebFetchTool(&WebFetchOptions{
-		HTTPClient:        server.Client(),
-		AllowedHosts:      []string{serverHost(t, server.URL)},
+		HTTPClient:        client,
+		AllowedHosts:      []string{host},
 		AllowPrivateHosts: true,
 	})
 	params := map[string]interface{}{
-		"url":    server.URL,
+		"url":    baseURL,
 		"prompt": "redirect",
 	}
 	res, err := tool.Execute(context.Background(), params)
@@ -103,21 +138,22 @@ func TestWebFetchReturnsRedirectNotice(t *testing.T) {
 }
 
 func TestWebFetchTimeout(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	host := "example.test"
+	baseURL := "https://" + host
+	client := newInMemoryHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
-	t.Cleanup(server.Close)
 
 	tool := NewWebFetchTool(&WebFetchOptions{
-		HTTPClient:        server.Client(),
+		HTTPClient:        client,
 		Timeout:           50 * time.Millisecond,
-		AllowedHosts:      []string{serverHost(t, server.URL)},
+		AllowedHosts:      []string{host},
 		AllowPrivateHosts: true,
 	})
 
 	params := map[string]interface{}{
-		"url":    server.URL,
+		"url":    baseURL,
 		"prompt": "timeout",
 	}
 	if _, err := tool.Execute(context.Background(), params); err == nil {
@@ -223,18 +259,19 @@ func TestHtmlToMarkdownInlineElements(t *testing.T) {
 }
 
 func TestWebFetchRejectsLargeResponse(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	host := "example.test"
+	baseURL := "https://" + host
+	client := newInMemoryHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(strings.Repeat("A", 32)))
 	}))
-	t.Cleanup(server.Close)
 
 	tool := NewWebFetchTool(&WebFetchOptions{
-		HTTPClient:        server.Client(),
+		HTTPClient:        client,
 		MaxContentSize:    8,
-		AllowedHosts:      []string{serverHost(t, server.URL)},
+		AllowedHosts:      []string{host},
 		AllowPrivateHosts: true,
 	})
-	params := map[string]interface{}{"url": server.URL, "prompt": "limit"}
+	params := map[string]interface{}{"url": baseURL, "prompt": "limit"}
 	if _, err := tool.Execute(context.Background(), params); err == nil {
 		t.Fatalf("expected size limit error")
 	}

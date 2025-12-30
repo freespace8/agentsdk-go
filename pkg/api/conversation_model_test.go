@@ -37,7 +37,7 @@ func TestConversationModelGenerateTracksStateAndToolCalls(t *testing.T) {
 	stub := &stubModel{responses: []*model.Response{response}}
 
 	state := &middleware.State{Values: map[string]any{}}
-	ctx := context.WithValue(context.Background(), middlewareStateKey, state)
+	ctx := context.WithValue(context.Background(), model.MiddlewareStateKey, state)
 
 	conv := &conversationModel{
 		base:         stub,

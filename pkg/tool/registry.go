@@ -119,11 +119,12 @@ func (r *Registry) Execute(ctx context.Context, name string, params map[string]i
 
 // RegisterMCPServer discovers tools exposed by an MCP server and registers them.
 // serverPath accepts either an http(s) URL (SSE transport) or a stdio command.
-func (r *Registry) RegisterMCPServer(ctx context.Context, serverPath string) error {
+func (r *Registry) RegisterMCPServer(ctx context.Context, serverPath, serverName string) error {
 	ctx = nonNilContext(ctx)
 	if strings.TrimSpace(serverPath) == "" {
 		return fmt.Errorf("server path is empty")
 	}
+	serverName = strings.TrimSpace(serverName)
 	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -173,15 +174,20 @@ func (r *Registry) RegisterMCPServer(ctx context.Context, serverPath string) err
 		if strings.TrimSpace(desc.Name) == "" {
 			return fmt.Errorf("encountered MCP tool with empty name")
 		}
-		if r.hasTool(desc.Name) {
-			return fmt.Errorf("tool %s already registered", desc.Name)
+		toolName := desc.Name
+		if serverName != "" {
+			toolName = fmt.Sprintf("%s__%s", serverName, desc.Name)
+		}
+		if r.hasTool(toolName) {
+			return fmt.Errorf("tool %s already registered", toolName)
 		}
 		schema, err := convertMCPSchema(desc.InputSchema)
 		if err != nil {
 			return fmt.Errorf("parse schema for %s: %w", desc.Name, err)
 		}
 		wrappers = append(wrappers, &remoteTool{
-			name:        desc.Name,
+			name:        toolName,
+			remoteName:  desc.Name,
 			description: desc.Description,
 			schema:      schema,
 			session:     session,
@@ -402,6 +408,7 @@ func nonNilContext(ctx context.Context) context.Context {
 
 type remoteTool struct {
 	name        string
+	remoteName  string
 	description string
 	schema      *JSONSchema
 	session     *mcp.ClientSession
@@ -418,8 +425,12 @@ func (r *remoteTool) Execute(ctx context.Context, params map[string]interface{})
 	if params == nil {
 		params = map[string]interface{}{}
 	}
+	remoteName := r.remoteName
+	if remoteName == "" {
+		remoteName = r.name
+	}
 	res, err := r.session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      r.name,
+		Name:      remoteName,
 		Arguments: params,
 	})
 	if err != nil {

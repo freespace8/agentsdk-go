@@ -122,7 +122,7 @@ fmt.Printf("usage: %d tokens, stop reason=%s\n", resp.Usage.TotalTokens, resp.St
 - `type Tool interface` (`tool.go:6`) includes `Name`, `Description`, `Schema() *JSONSchema`, `Execute(ctx, params)`. If `Schema` is `nil`, the registry skips validation.
 - `type JSONSchema`, `type Validator`, `DefaultValidator` live in `schema.go`/`validator.go`; the Registry calls `validator.Validate` before execution. Use `registry.SetValidator` to inject a custom one.
 - `type Registry struct` (`registry.go:20`) offers thread-safe `Register`, `Get`, `List`, `Execute`. `Register` rejects empty or duplicate names; `Execute` validates schema then runs the tool.
-- MCP integration: `RegisterMCPServer(ctx, serverPath)` (`registry.go:118`) builds SSE or stdio `ClientSession` via `newMCPClient`, iterates remote tool descriptors into `remoteTool`; remote and local tools share the same namespace.
+- MCP integration: `RegisterMCPServer(ctx, serverPath, serverName)` (`registry.go:118`) builds SSE or stdio `ClientSession` via `newMCPClient`, iterates remote tool descriptors into `remoteTool`; when `serverName` is non-empty, remote tools are registered as `{serverName}__{toolName}` to avoid cross-server collisions.
 - Resource cleanup: `Registry.Close()` (`registry.go:198`) closes tracked MCP sessions; repeat calls are safe, close errors are logged and ignored.
 - `type Executor struct` (`executor.go:16`) binds a `Registry` with optional `sandbox.Manager`. `Execute` clones params, enforces sandbox, then runs the tool. `ExecuteAll` runs tools concurrently while preserving order.
 - `type Call` (`types.go:14`) encapsulates a tool call with `Path`, `Host`, `Usage sandbox.ResourceUsage` so sandbox can leverage request context.

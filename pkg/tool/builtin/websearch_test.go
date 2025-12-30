@@ -3,7 +3,6 @@ package toolbuiltin
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -348,15 +347,13 @@ func ddgHTML(results ...string) string {
 
 func newTestWebSearchTool(t *testing.T, handler http.HandlerFunc, opts *WebSearchOptions) *WebSearchTool {
 	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	stubDuckDuckGoEndpoint(t, server.URL)
+	stubDuckDuckGoEndpoint(t, "https://duckduckgo.test/html/")
 
 	var cfg WebSearchOptions
 	if opts != nil {
 		cfg = *opts
 	}
-	cfg.HTTPClient = server.Client()
+	cfg.HTTPClient = newInMemoryHTTPClient(handler)
 	return NewWebSearchTool(&cfg)
 }
 

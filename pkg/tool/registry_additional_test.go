@@ -330,7 +330,7 @@ func TestRemoteToolDescription(t *testing.T) {
 
 func TestRegisterMCPServerRejectsEmptyPath(t *testing.T) {
 	r := NewRegistry()
-	if err := r.RegisterMCPServer(context.Background(), "   "); err == nil || !strings.Contains(err.Error(), "empty") {
+	if err := r.RegisterMCPServer(context.Background(), "   ", ""); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("expected empty server path error, got %v", err)
 	}
 }
@@ -344,7 +344,7 @@ func TestRegisterMCPServerInvalidTransportSpec(t *testing.T) {
 	})
 	defer restore()
 
-	if err := NewRegistry().RegisterMCPServer(context.Background(), "stdio://invalid"); err == nil || !strings.Contains(err.Error(), "connect MCP client") {
+	if err := NewRegistry().RegisterMCPServer(context.Background(), "stdio://invalid", ""); err == nil || !strings.Contains(err.Error(), "connect MCP client") {
 		t.Fatalf("expected connect error, got %v", err)
 	}
 }
@@ -357,7 +357,7 @@ func TestRegisterMCPServerUsesTimeoutContext(t *testing.T) {
 	})
 	defer restore()
 
-	err := NewRegistry().RegisterMCPServer(context.Background(), "stdio://fail")
+	err := NewRegistry().RegisterMCPServer(context.Background(), "stdio://fail", "")
 	if err == nil || !strings.Contains(err.Error(), "connect MCP client") {
 		t.Fatalf("expected connect error, got %v", err)
 	}
@@ -387,7 +387,7 @@ func TestRegisterMCPServerTransportBuilderError(t *testing.T) {
 	})
 	defer restore()
 
-	if err := NewRegistry().RegisterMCPServer(context.Background(), "spec"); err == nil || !strings.Contains(err.Error(), "boom") {
+	if err := NewRegistry().RegisterMCPServer(context.Background(), "spec", ""); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected transport error, got %v", err)
 	}
 }
@@ -397,7 +397,7 @@ func TestRegisterMCPServerListToolsError(t *testing.T) {
 	restore := withStubMCPClient(t, sessionFactory(server))
 	defer restore()
 
-	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake"); err == nil || !strings.Contains(err.Error(), "list MCP tools") {
+	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake", ""); err == nil || !strings.Contains(err.Error(), "list MCP tools") {
 		t.Fatalf("expected list error, got %v", err)
 	}
 	if !server.Closed() {
@@ -410,7 +410,7 @@ func TestRegisterMCPServerNoTools(t *testing.T) {
 	restore := withStubMCPClient(t, sessionFactory(server))
 	defer restore()
 
-	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake"); err == nil || !strings.Contains(err.Error(), "returned no tools") {
+	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake", ""); err == nil || !strings.Contains(err.Error(), "returned no tools") {
 		t.Fatalf("expected empty tool list error, got %v", err)
 	}
 	if !server.Closed() {
@@ -423,7 +423,7 @@ func TestRegisterMCPServerEmptyToolName(t *testing.T) {
 	restore := withStubMCPClient(t, sessionFactory(server))
 	defer restore()
 
-	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake"); err == nil || !strings.Contains(err.Error(), "empty name") {
+	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake", ""); err == nil || !strings.Contains(err.Error(), "empty name") {
 		t.Fatalf("expected empty tool name error, got %v", err)
 	}
 }
@@ -437,7 +437,7 @@ func TestRegisterMCPServerDuplicateLocalTool(t *testing.T) {
 	if err := r.Register(&spyTool{name: "dup"}); err != nil {
 		t.Fatalf("setup register failed: %v", err)
 	}
-	if err := r.RegisterMCPServer(context.Background(), "fake"); err == nil || !strings.Contains(err.Error(), "already registered") {
+	if err := r.RegisterMCPServer(context.Background(), "fake", ""); err == nil || !strings.Contains(err.Error(), "already registered") {
 		t.Fatalf("expected duplicate tool error, got %v", err)
 	}
 }
@@ -447,7 +447,7 @@ func TestRegisterMCPServerSchemaError(t *testing.T) {
 	restore := withStubMCPClient(t, sessionFactory(server))
 	defer restore()
 
-	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake"); err == nil || !strings.Contains(err.Error(), "parse schema for bad") {
+	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake", ""); err == nil || !strings.Contains(err.Error(), "parse schema for bad") {
 		t.Fatalf("expected schema parse error, got %v", err)
 	}
 }
@@ -457,7 +457,7 @@ func TestRegisterMCPServerDuplicateRemoteTools(t *testing.T) {
 	restore := withStubMCPClient(t, sessionFactory(server))
 	defer restore()
 
-	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake"); err == nil || !strings.Contains(err.Error(), "already registered") {
+	if err := NewRegistry().RegisterMCPServer(context.Background(), "fake", ""); err == nil || !strings.Contains(err.Error(), "already registered") {
 		t.Fatalf("expected duplicate remote error, got %v", err)
 	}
 	if !server.Closed() {
@@ -471,7 +471,7 @@ func TestRegisterMCPServerSuccessAddsClient(t *testing.T) {
 	defer restore()
 
 	r := NewRegistry()
-	if err := r.RegisterMCPServer(context.Background(), "fake"); err != nil {
+	if err := r.RegisterMCPServer(context.Background(), "fake", ""); err != nil {
 		t.Fatalf("register failed: %v", err)
 	}
 	if len(r.mcpSessions) != 1 {
@@ -485,13 +485,46 @@ func TestRegisterMCPServerSuccessAddsClient(t *testing.T) {
 	}
 }
 
+func TestRegisterMCPServerNamespacesRemoteTools(t *testing.T) {
+	server := &stubMCPServer{tools: []*mcp.Tool{{Name: "echo", Description: "remote tool", InputSchema: map[string]any{"type": "object"}}}}
+	server.callFn = func(_ context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+		if params.Name != "echo" {
+			return nil, fmt.Errorf("unexpected tool %s", params.Name)
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+	}
+	restore := withStubMCPClient(t, sessionFactory(server))
+	defer restore()
+
+	r := NewRegistry()
+	if err := r.RegisterMCPServer(context.Background(), "fake", "svc"); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	t.Cleanup(r.Close)
+
+	if _, err := r.Get("svc__echo"); err != nil {
+		t.Fatalf("expected namespaced tool to be registered: %v", err)
+	}
+	if _, err := r.Get("echo"); err == nil {
+		t.Fatalf("expected unnamespaced tool to be missing")
+	}
+
+	res, err := r.Execute(context.Background(), "svc__echo", nil)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if !strings.Contains(res.Output, "ok") {
+		t.Fatalf("unexpected output %q", res.Output)
+	}
+}
+
 func TestRegistryCloseClosesSessions(t *testing.T) {
 	server := &stubMCPServer{tools: []*mcp.Tool{{Name: "echo", Description: "remote", InputSchema: map[string]any{"type": "object"}}}}
 	restore := withStubMCPClient(t, sessionFactory(server))
 	defer restore()
 
 	r := NewRegistry()
-	if err := r.RegisterMCPServer(context.Background(), "fake"); err != nil {
+	if err := r.RegisterMCPServer(context.Background(), "fake", ""); err != nil {
 		t.Fatalf("register failed: %v", err)
 	}
 

@@ -579,7 +579,7 @@ func TestConcurrentExecution(t *testing.T) {
 			Error  string `json:"error,omitempty"`
 		}
 
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer r.Body.Close()
 			var in runRequest
 			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -597,11 +597,7 @@ func TestConcurrentExecution(t *testing.T) {
 			}
 			//nolint:errcheck // test HTTP handler, final response write failure is not actionable
 			_ = json.NewEncoder(w).Encode(runResponse{Output: out.Result.Output})
-		}))
-		t.Cleanup(srv.Close)
-
-		client := srv.Client()
-		client.Timeout = 5 * time.Second
+		})
 
 		sessions := []string{"s-1", "s-2", "s-3", "s-4", "s-5"}
 		const perSession = 3
@@ -619,11 +615,16 @@ func TestConcurrentExecution(t *testing.T) {
 				for i := 0; i < perSession; i++ {
 					//nolint:errcheck // test code, json.Marshal with simple struct never fails
 					payload, _ := json.Marshal(runRequest{Prompt: "ok", SessionID: sessionID})
-					resp, err := client.Post(srv.URL, "application/json", bytes.NewReader(payload))
-					if err != nil {
-						errs <- err
-						return
-					}
+					reqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					req := httptest.NewRequest(http.MethodPost, "http://example.test", bytes.NewReader(payload))
+					req.Header.Set("Content-Type", "application/json")
+					req = req.WithContext(reqCtx)
+
+					recorder := httptest.NewRecorder()
+					handler.ServeHTTP(recorder, req)
+					cancel()
+
+					resp := recorder.Result()
 					var out runResponse
 					decodeErr := json.NewDecoder(resp.Body).Decode(&out)
 					resp.Body.Close()

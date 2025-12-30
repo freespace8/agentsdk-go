@@ -5,6 +5,11 @@ type JSONSchema struct {
 	Type       string                 `json:"type"`
 	Properties map[string]interface{} `json:"properties"`
 	Required   []string               `json:"required"`
+	Enum       []interface{}          `json:"enum,omitempty"`
+	Pattern    string                 `json:"pattern,omitempty"`
+	Minimum    *float64               `json:"minimum,omitempty"`
+	Maximum    *float64               `json:"maximum,omitempty"`
+	Items      *JSONSchema            `json:"items,omitempty"`
 }
 
 // ToolSchema defines the structure for tool definitions passed to LLM.

@@ -443,9 +443,10 @@ func TestExecuteSubagentBranches(t *testing.T) {
 
 	// no matching subagent with empty target suppresses error
 	rt.subMgr = subagents.NewManager()
-	_, _, err = rt.executeSubagent(context.Background(), "p", skills.ActivationContext{}, &Request{Prompt: "p"})
-	if !errors.Is(err, subagents.ErrDispatchUnauthorized) {
-		t.Fatalf("expected dispatch authorization error, got %v", err)
+	// without WithTaskDispatch, executeSubagent treats unauthorized dispatch as no-op
+	res, out, err = rt.executeSubagent(context.Background(), "p", skills.ActivationContext{}, &Request{Prompt: "p"})
+	if err != nil || res != nil || out != "p" {
+		t.Fatalf("expected no-op for unauthorized dispatch, got res=%v out=%q err=%v", res, out, err)
 	}
 	res, out, err = rt.executeSubagent(subagents.WithTaskDispatch(context.Background()), "p", skills.ActivationContext{}, &Request{Prompt: "p"})
 	if err != nil || res != nil || out != "p" {

@@ -35,7 +35,7 @@ func TestRegisterMCPServersNotBlockedByBuiltinWhitelist(t *testing.T) {
 		t.Fatalf("register tools: %v", err)
 	}
 
-	err := registerMCPServers(context.Background(), reg, nil, []string{"stdio://dummy"})
+	err := registerMCPServers(context.Background(), reg, nil, []mcpServer{{Spec: "stdio://dummy"}})
 	if err == nil || !errors.Is(err, counter.err) {
 		t.Fatalf("expected dial error propagated, got %v", err)
 	}

@@ -30,10 +30,9 @@ import (
 	"github.com/google/uuid"
 )
 
-type contextKey string
+type streamContextKey string
 
-const middlewareStateKey contextKey = "agentsdk.middleware.state"
-const streamEmitCtxKey contextKey = "agentsdk.stream.emit"
+const streamEmitCtxKey streamContextKey = "agentsdk.stream.emit"
 
 func withStreamEmit(ctx context.Context, emit streamEmitFunc) context.Context {
 	if ctx == nil {
@@ -760,12 +759,14 @@ func (rt *Runtime) executeSubagent(ctx context.Context, prompt string, activatio
 	if dispatchCtx == nil {
 		dispatchCtx = context.Background()
 	}
-	dispatchCtx = subagents.WithTaskDispatch(dispatchCtx)
 	if subCtx, ok := buildSubagentContext(*req, def, builtin); ok {
 		dispatchCtx = subagents.WithContext(dispatchCtx, subCtx)
 	}
 	res, err := rt.subMgr.Dispatch(dispatchCtx, request)
 	if err != nil {
+		if errors.Is(err, subagents.ErrDispatchUnauthorized) {
+			return nil, prompt, nil
+		}
 		if errors.Is(err, subagents.ErrNoMatchingSubagent) && req.TargetSubagent == "" {
 			return nil, prompt, nil
 		}
@@ -953,7 +954,7 @@ func (m *conversationModel) Generate(ctx context.Context, _ *agent.Context) (*ag
 	}
 
 	// Populate middleware state with model request if available
-	if st, ok := ctx.Value(middlewareStateKey).(*middleware.State); ok && st != nil {
+	if st, ok := ctx.Value(model.MiddlewareStateKey).(*middleware.State); ok && st != nil {
 		st.ModelInput = req
 		if st.Values == nil {
 			st.Values = map[string]any{}
@@ -969,7 +970,7 @@ func (m *conversationModel) Generate(ctx context.Context, _ *agent.Context) (*ag
 	m.stopReason = resp.StopReason
 
 	// Populate middleware state with model response and usage
-	if st, ok := ctx.Value(middlewareStateKey).(*middleware.State); ok && st != nil {
+	if st, ok := ctx.Value(model.MiddlewareStateKey).(*middleware.State); ok && st != nil {
 		st.ModelOutput = resp
 		if st.Values == nil {
 			st.Values = map[string]any{}
@@ -1360,13 +1361,14 @@ func effectiveEntryPoint(opts Options) EntryPoint {
 	return entry
 }
 
-func registerMCPServers(ctx context.Context, registry *tool.Registry, manager *sandbox.Manager, servers []string) error {
+func registerMCPServers(ctx context.Context, registry *tool.Registry, manager *sandbox.Manager, servers []mcpServer) error {
 	for _, server := range servers {
-		if err := enforceSandboxHost(manager, server); err != nil {
+		spec := server.Spec
+		if err := enforceSandboxHost(manager, spec); err != nil {
 			return err
 		}
-		if err := registry.RegisterMCPServer(ctx, server); err != nil {
-			return fmt.Errorf("api: register MCP %s: %w", server, err)
+		if err := registry.RegisterMCPServer(ctx, spec, server.Name); err != nil {
+			return fmt.Errorf("api: register MCP %s: %w", spec, err)
 		}
 	}
 	return nil

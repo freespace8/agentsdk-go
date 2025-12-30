@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -153,11 +154,11 @@ func TestRegistryExecute(t *testing.T) {
 }
 
 func TestRegisterMCPServerSSE(t *testing.T) {
-	h := newRegistrySSEHarness()
+	h := newRegistrySSEHarness(t)
 	defer h.Close()
 
 	r := NewRegistry()
-	if err := r.RegisterMCPServer(context.Background(), h.URL()); err != nil {
+	if err := r.RegisterMCPServer(context.Background(), h.URL(), ""); err != nil {
 		t.Fatalf("register MCP: %v", err)
 	}
 
@@ -208,7 +209,14 @@ type registrySSEHarness struct {
 	server *mcpsdk.Server
 }
 
-func newRegistrySSEHarness() *registrySSEHarness {
+func newRegistrySSEHarness(t *testing.T) *registrySSEHarness {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("httptest: listen not permitted: %v", err)
+	}
+
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "registry-test", Version: "dev"}, nil)
 	server.AddTool(&mcpsdk.Tool{
 		Name:        "echo",
@@ -233,8 +241,12 @@ func newRegistrySSEHarness() *registrySSEHarness {
 		return server
 	}, nil)
 
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Listener = listener
+	srv.Start()
+
 	return &registrySSEHarness{
-		srv:    httptest.NewServer(handler),
+		srv:    srv,
 		server: server,
 	}
 }

@@ -17,9 +17,9 @@ type mcpServer struct {
 // collectMCPServers merges explicit API inputs, settings.json entries, and
 // plugin-provided .mcp.json servers into a deduplicated list that respects
 // managed allow/deny policies.
-func collectMCPServers(settings *config.Settings, plugins []*plugins.ClaudePlugin, explicit []string) []string {
+func collectMCPServers(settings *config.Settings, plugins []*plugins.ClaudePlugin, explicit []string) []mcpServer {
 	seen := map[string]struct{}{}
-	var servers []string
+	var servers []mcpServer
 	allowRules := managedAllowRules(settings)
 	denyRules := managedDenyRules(settings)
 
@@ -35,7 +35,7 @@ func collectMCPServers(settings *config.Settings, plugins []*plugins.ClaudePlugi
 			return
 		}
 		seen[spec] = struct{}{}
-		servers = append(servers, spec)
+		servers = append(servers, mcpServer{Name: strings.TrimSpace(name), Spec: spec, URL: strings.TrimSpace(url)})
 	}
 
 	for _, spec := range explicit {
